@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* ── Handshake Message Types ──────────────────────────── */
 
@@ -33,6 +34,7 @@ typedef enum nxp_hs_state {
     NXP_HS_WAIT_SERVER_HELLO,     /* Client: sent CH, waiting for SH */
     NXP_HS_WAIT_CLIENT_HELLO,     /* Server: waiting for CH */
     NXP_HS_WAIT_HANDSHAKE_DONE,   /* Client: got SH, waiting for HS_DONE */
+    NXP_HS_ZERO_RTT_SENT,         /* Client: sent 0-RTT, waiting for SH */
     NXP_HS_COMPLETE,
 } nxp_hs_state;
 
@@ -44,6 +46,8 @@ typedef enum nxp_hs_state {
 #define NXP_TP_MAX_STREAMS_BIDI       0x03
 #define NXP_TP_MAX_STREAMS_UNI        0x04
 #define NXP_TP_IDLE_TIMEOUT           0x05
+#define NXP_TP_MAX_EARLY_DATA         0x06
+#define NXP_TP_ACTIVE_CID_LIMIT       0x0A
 
 typedef struct nxp_transport_params {
     uint64_t initial_max_data;
@@ -51,6 +55,8 @@ typedef struct nxp_transport_params {
     uint32_t max_streams_bidi;
     uint32_t max_streams_uni;
     uint64_t idle_timeout_us;
+    uint64_t max_early_data;       /* 0-RTT early data limit (Phase 6) */
+    uint32_t active_cid_limit;     /* Max CIDs peer can supply (Phase 6) */
 } nxp_transport_params;
 
 /* ── Handshake Context ────────────────────────────────── */
@@ -106,6 +112,33 @@ typedef struct nxp_handshake {
 
     /* Timestamp for handshake duration */
     uint64_t start_time;
+
+    /* ── Phase 6: 0-RTT / Session Resumption ────────── */
+
+    /* Resumption secret (derived after handshake, used for session tickets) */
+    uint8_t resumption_secret[NXP_HASH_LEN];
+    bool    has_resumption_secret;
+
+    /* Master secret (kept temporarily for resumption secret derivation) */
+    uint8_t master_secret[NXP_HASH_LEN];
+    bool    has_master_secret;
+
+    /* 0-RTT state */
+    nxp_crypto_state zero_rtt_keys;
+    bool             zero_rtt_attempted;   /* Client attempted 0-RTT */
+    bool             zero_rtt_accepted;    /* Server accepted 0-RTT */
+    bool             zero_rtt_rejected;    /* Server rejected 0-RTT */
+    uint64_t         max_early_data;       /* Max 0-RTT data bytes */
+
+    /* Session ticket (client receives from server via NEW_TOKEN) */
+    uint8_t session_ticket[256];
+    size_t  session_ticket_len;
+    bool    has_session_ticket;
+
+    /* Server-side: pending NEW_TOKEN frame to send after handshake */
+    bool    send_new_token;
+    uint8_t new_token_buf[256];
+    size_t  new_token_len;
 } nxp_handshake;
 
 /* ── Handshake API ────────────────────────────────────── */
@@ -170,6 +203,38 @@ size_t nxp_handshake_fill_crypto(
 /* Check if handshake is complete */
 [[nodiscard]] static inline bool nxp_handshake_is_complete(const nxp_handshake *hs) {
     return hs->state == NXP_HS_COMPLETE;
+}
+
+/* ── Phase 6: 0-RTT / Session Resumption API ─────────── */
+
+/*
+ * Client: initiate a 0-RTT handshake using a saved session ticket.
+ * Derives 0-RTT keys from the ticket's resumption secret.
+ * The ClientHello includes the ticket token in the Initial packet.
+ */
+[[nodiscard]] nxp_result nxp_handshake_start_client_0rtt(
+    nxp_handshake *hs,
+    const nxp_conn_id *server_dcid,
+    const uint8_t *ticket, size_t ticket_len,
+    const uint8_t server_key[32]
+);
+
+/* Check if this handshake has 0-RTT keys available */
+[[nodiscard]] static inline bool nxp_handshake_has_zero_rtt(const nxp_handshake *hs) {
+    return hs->zero_rtt_keys.available;
+}
+
+/* Check if 0-RTT was accepted by the server */
+[[nodiscard]] static inline bool nxp_handshake_is_0rtt_accepted(const nxp_handshake *hs) {
+    return hs->zero_rtt_accepted;
+}
+
+/* Get the resumption secret (available after handshake completes) */
+[[nodiscard]] static inline bool nxp_handshake_get_resumption_secret(
+    const nxp_handshake *hs, uint8_t out[32]) {
+    if (!hs->has_resumption_secret) return false;
+    memcpy(out, hs->resumption_secret, 32);
+    return true;
 }
 
 #endif /* NXP_HANDSHAKE_INTERNAL_H */

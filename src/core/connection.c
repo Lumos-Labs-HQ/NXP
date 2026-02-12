@@ -15,6 +15,7 @@
 #include "frame_internal.h"
 #include "hash_map.h"
 #include "util/varint.h"
+#include "congestion/bbr_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,7 @@ typedef struct ack_ctx {
     nxp_conn *conn;
 } ack_ctx;
 
-/* When a sent packet is ACKed, update its stream data */
+/* When a sent packet is ACKed, update its stream data + CC */
 static void on_packet_acked(void *ctx, const nxp_sent_pkt *pkt) {
     ack_ctx *ac = (ack_ctx *)ctx;
     nxp_conn *conn = ac->conn;
@@ -40,9 +41,35 @@ static void on_packet_acked(void *ctx, const nxp_sent_pkt *pkt) {
             nxp_stream_on_ack(s, rec->offset, rec->len, rec->fin);
         }
     }
+
+    /* Phase 7: Update delivery rate and notify CC */
+    if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
+        uint64_t now_us = pkt->sent_time + conn->ack.latest_rtt;
+        nxp_dr_on_packet_acked(&conn->delivery_rate, &pkt->dr_state,
+                                pkt->sent_bytes, now_us);
+
+        nxp_cc_ack_info info = {
+            .pkt_num           = pkt->pkt_num,
+            .acked_bytes       = pkt->sent_bytes,
+            .sent_time         = pkt->sent_time,
+            .now_us            = now_us,
+            .rtt_us            = conn->ack.latest_rtt,
+            .min_rtt_us        = conn->ack.min_rtt,
+            .bytes_in_flight   = conn->ack.bytes_in_flight,
+            .delivery_rate_bps = conn->delivery_rate.rate_sample_bps,
+            .round_count       = conn->delivery_rate.round_count,
+            .is_app_limited    = conn->delivery_rate.rate_is_app_limited,
+            .round_start       = conn->delivery_rate.round_start,
+        };
+        conn->cc_ops->on_ack(conn->cc_state, &info);
+
+        /* Update pacer rate */
+        nxp_pacer_set_rate(&conn->pacer,
+                            conn->cc_ops->get_pacing_rate(conn->cc_state));
+    }
 }
 
-/* When a sent packet is declared lost, rewind its stream data */
+/* When a sent packet is declared lost, rewind its stream data + notify CC */
 static void on_packet_lost(void *ctx, const nxp_sent_pkt *pkt) {
     ack_ctx *ac = (ack_ctx *)ctx;
     nxp_conn *conn = ac->conn;
@@ -57,6 +84,16 @@ static void on_packet_lost(void *ctx, const nxp_sent_pkt *pkt) {
             /* Re-add to scheduler for retransmission */
             nxp_sched_add(conn, s);
         }
+    }
+
+    /* Phase 7: Notify CC of loss */
+    if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
+        nxp_cc_loss_info info = {
+            .lost_bytes      = pkt->sent_bytes,
+            .now_us          = pkt->sent_time, /* approximation */
+            .bytes_in_flight = conn->ack.bytes_in_flight,
+        };
+        conn->cc_ops->on_loss(conn->cc_state, &info);
     }
 }
 
@@ -135,6 +172,15 @@ nxp_conn *nxp_conn_create(const nxp_conn_config *config, bool is_server) {
     /* Scheduler starts empty */
     conn->sched_head = nullptr;
 
+    /* Phase 6: Migration state */
+    nxp_migration_init(&conn->migration);
+
+    /* Phase 7: Congestion control (BBR) */
+    conn->cc_ops = &nxp_cc_bbr;
+    conn->cc_state = conn->cc_ops->create();
+    nxp_pacer_init(&conn->pacer);
+    nxp_dr_init(&conn->delivery_rate);
+
     return conn;
 }
 
@@ -164,6 +210,13 @@ void nxp_conn_destroy(nxp_conn *conn) {
 
     /* Wipe crypto keys */
     memset(&conn->crypto, 0, sizeof(conn->crypto));
+    memset(&conn->zero_rtt_crypto, 0, sizeof(conn->zero_rtt_crypto));
+
+    /* Phase 7: CC cleanup */
+    if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
+        conn->cc_ops->destroy(conn->cc_state);
+        conn->cc_state = nullptr;
+    }
 
     free(conn);
 }
@@ -287,6 +340,55 @@ static nxp_result process_frames(nxp_conn *conn, const uint8_t *payload,
                         if (tp->max_streams_uni > 0)
                             conn->peer_max_streams_uni = tp->max_streams_uni;
                     }
+                }
+            }
+            break;
+
+        /* Phase 6: Migration frames */
+        case NXP_FRAME_PATH_CHALLENGE:
+            nxp_migration_on_path_challenge(&conn->migration,
+                                             frame.path_challenge.data);
+            break;
+
+        case NXP_FRAME_PATH_RESPONSE:
+            if (nxp_migration_on_path_response(&conn->migration,
+                                                frame.path_response.data)) {
+                /* Path validated - update peer address */
+                conn->peer_addr = conn->migration.current_path.addr;
+                /* Rotate DCID if we have an unused CID */
+                const nxp_cid_entry *new_cid =
+                    nxp_migration_get_unused_cid(&conn->migration);
+                if (new_cid != nullptr) {
+                    conn->dcid = new_cid->cid;
+                    nxp_migration_use_cid(&conn->migration, new_cid->seq_num);
+                }
+            }
+            break;
+
+        case NXP_FRAME_NEW_CONNECTION_ID:
+            (void)nxp_migration_on_new_connection_id(
+                &conn->migration,
+                &frame.new_connection_id.cid,
+                frame.new_connection_id.seq_num,
+                frame.new_connection_id.retire_prior_to,
+                frame.new_connection_id.stateless_reset_token);
+            break;
+
+        case NXP_FRAME_RETIRE_CONNECTION_ID:
+            (void)nxp_migration_on_retire_connection_id(
+                &conn->migration,
+                frame.retire_connection_id.seq_num);
+            break;
+
+        case NXP_FRAME_NEW_TOKEN:
+            /* Client: save session ticket from server */
+            if (!conn->is_server && conn->handshake != nullptr) {
+                if (frame.new_token.token_len <= sizeof(conn->handshake->session_ticket)) {
+                    memcpy(conn->handshake->session_ticket,
+                           frame.new_token.token,
+                           (size_t)frame.new_token.token_len);
+                    conn->handshake->session_ticket_len = (size_t)frame.new_token.token_len;
+                    conn->handshake->has_session_ticket = true;
                 }
             }
             break;
@@ -664,6 +766,19 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
 
     conn->last_activity_us = now_us;
 
+    /* Phase 7: Pacing check - update tokens and see if we can send */
+    nxp_pacer_update(&conn->pacer, now_us);
+    if (!nxp_pacer_can_send(&conn->pacer, NXP_BBR_MAX_DATAGRAM_SIZE)) {
+        /* Paced out - nothing to send right now.
+         * Only gate data packets, not control frames (ACKs etc.) */
+        bool has_control_frames = conn->ack.ack_needed ||
+                                   conn->send_conn_close ||
+                                   conn->send_ping ||
+                                   nxp_flow_should_update(&conn->conn_flow) ||
+                                   nxp_migration_has_pending(&conn->migration);
+        if (!has_control_frames) return 0;
+    }
+
     /* Build the packet: short header + frames */
 
     /* Reserve space for the short header (we'll fill it in later) */
@@ -739,8 +854,66 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
         }
     }
 
-    /* 5. STREAM frames from the scheduler */
-    while (frame_pos < frame_space && sent_meta.frame_count < NXP_MAX_STREAM_FRAMES_PER_PKT) {
+    /* 5. Migration frames (Phase 6) */
+    if (conn->migration.send_path_response) {
+        size_t n = nxp_frame_encode_path_response(
+            conn->migration.pending_response_data,
+            frame_buf + frame_pos, frame_space - frame_pos);
+        if (n > 0) {
+            frame_pos += n;
+            has_ack_eliciting = true;
+            conn->migration.send_path_response = false;
+        }
+    }
+    if (conn->migration.send_path_challenge) {
+        size_t n = nxp_frame_encode_path_challenge(
+            conn->migration.new_path.challenge_data,
+            frame_buf + frame_pos, frame_space - frame_pos);
+        if (n > 0) {
+            frame_pos += n;
+            has_ack_eliciting = true;
+            conn->migration.send_path_challenge = false;
+        }
+    }
+    while (conn->migration.pending_new_cid_count > 0) {
+        uint32_t idx = conn->migration.pending_new_cid_count - 1;
+        nxp_cid_entry *e = &conn->migration.pending_new_cids[idx];
+        nxp_frame_new_connection_id ncid = {
+            .seq_num = e->seq_num,
+            .retire_prior_to = 0,
+            .cid = e->cid,
+        };
+        memcpy(ncid.stateless_reset_token, e->stateless_reset_token, 16);
+        size_t n = nxp_frame_encode_new_connection_id(
+            &ncid, frame_buf + frame_pos, frame_space - frame_pos);
+        if (n == 0) break;
+        frame_pos += n;
+        has_ack_eliciting = true;
+        conn->migration.pending_new_cid_count--;
+    }
+    if (conn->migration.send_retire_cid) {
+        size_t n = nxp_frame_encode_retire_connection_id(
+            conn->migration.retire_seq,
+            frame_buf + frame_pos, frame_space - frame_pos);
+        if (n > 0) {
+            frame_pos += n;
+            has_ack_eliciting = true;
+            conn->migration.send_retire_cid = false;
+        }
+    }
+
+    /* 6. STREAM frames from the scheduler (CC-gated) */
+    /* Phase 7: Check cwnd before sending data */
+    bool cc_allows = true;
+    if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
+        uint64_t cwnd = conn->cc_ops->get_cwnd(conn->cc_state);
+        if (conn->ack.bytes_in_flight >= cwnd) {
+            cc_allows = false; /* Cwnd exhausted */
+        }
+    }
+
+    while (cc_allows && frame_pos < frame_space &&
+           sent_meta.frame_count < NXP_MAX_STREAM_FRAMES_PER_PKT) {
         nxp_stream_s *s = nxp_sched_next(conn);
         if (s == nullptr) break;
 
@@ -846,7 +1019,23 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
     sent_meta.in_flight     = has_ack_eliciting;
     sent_meta.declared_lost = false;
 
+    /* Phase 7: Take delivery rate snapshot for this packet */
+    nxp_dr_on_packet_sent(&conn->delivery_rate, (uint32_t)total,
+                           now_us, &sent_meta.dr_state);
+
     nxp_ack_on_pkt_sent(&conn->ack, &sent_meta);
+
+    /* Phase 7: Notify CC of sent packet + update pacer */
+    if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
+        conn->cc_ops->on_sent(conn->cc_state, (uint32_t)total,
+                               now_us, conn->ack.bytes_in_flight);
+        nxp_pacer_on_send(&conn->pacer, (uint32_t)total);
+
+        /* Mark app-limited if the scheduler has nothing left */
+        if (nxp_sched_next(conn) == nullptr) {
+            nxp_dr_set_app_limited(&conn->delivery_rate);
+        }
+    }
 
     /* Update stats */
     conn->stats.bytes_sent += total;
@@ -875,7 +1064,16 @@ uint64_t nxp_conn_timeout(const nxp_conn *conn, uint64_t now_us) {
         timeout = conn->ack.ack_delay_timer;
     }
 
-    (void)now_us;
+    /* Phase 7: Pacing timer */
+    if (conn->pacer.enabled) {
+        uint64_t pacing_delay = nxp_pacer_next_send_time(&conn->pacer,
+                                    NXP_BBR_MAX_DATAGRAM_SIZE);
+        if (pacing_delay > 0) {
+            uint64_t pace_deadline = now_us + pacing_delay;
+            if (pace_deadline < timeout) timeout = pace_deadline;
+        }
+    }
+
     return timeout;
 }
 

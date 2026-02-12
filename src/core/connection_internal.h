@@ -15,6 +15,10 @@
 #include "frame_internal.h"
 #include "hash_map.h"
 #include "crypto/crypto_internal.h"
+#include "migration_internal.h"
+#include "congestion/cc_interface.h"
+#include "congestion/pacing.h"
+#include "congestion/delivery_rate.h"
 
 /* Forward declaration for handshake */
 typedef struct nxp_handshake nxp_handshake;
@@ -64,6 +68,8 @@ typedef struct nxp_sent_pkt {
     /* Stream data carried in this packet (for retransmission) */
     nxp_stream_frame_record frames[NXP_MAX_STREAM_FRAMES_PER_PKT];
     uint8_t  frame_count;
+    /* Phase 7: delivery rate snapshot for CC */
+    nxp_dr_pkt_state dr_state;
 } nxp_sent_pkt;
 
 /* ── Received Packet Number Range ──────────────────────── */
@@ -190,6 +196,19 @@ struct nxp_conn {
     /* Crypto state (Phase 5) */
     nxp_crypto_state crypto;      /* Application-level keys */
     nxp_handshake   *handshake;   /* Active handshake (nullptr when complete) */
+
+    /* Phase 6: 0-RTT */
+    nxp_crypto_state zero_rtt_crypto;  /* 0-RTT early data keys */
+    uint64_t         zero_rtt_pn;      /* 0-RTT packet number */
+
+    /* Phase 6: Connection migration */
+    nxp_migration_state migration;
+
+    /* Phase 7: Congestion control */
+    const nxp_cc_ops   *cc_ops;        /* CC vtable (BBR) */
+    void               *cc_state;      /* Opaque CC state */
+    nxp_pacer           pacer;         /* Packet pacing */
+    nxp_delivery_rate   delivery_rate; /* Bandwidth sampling */
 
     /* Streams */
     nxp_hash_map  *streams;

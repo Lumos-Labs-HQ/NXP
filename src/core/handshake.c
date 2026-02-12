@@ -69,6 +69,20 @@ static size_t encode_transport_params(const nxp_transport_params *tp,
     if (n == 0) return 0;
     pos += n;
 
+    if (tp->max_early_data > 0) {
+        n = encode_tp_varint(buf + pos, cap - pos,
+                              NXP_TP_MAX_EARLY_DATA, tp->max_early_data);
+        if (n == 0) return 0;
+        pos += n;
+    }
+
+    if (tp->active_cid_limit > 0) {
+        n = encode_tp_varint(buf + pos, cap - pos,
+                              NXP_TP_ACTIVE_CID_LIMIT, tp->active_cid_limit);
+        if (n == 0) return 0;
+        pos += n;
+    }
+
     return pos;
 }
 
@@ -94,6 +108,8 @@ static bool decode_transport_params(const uint8_t *buf, size_t len,
         case NXP_TP_MAX_STREAMS_BIDI:       tp->max_streams_bidi = (uint32_t)val; break;
         case NXP_TP_MAX_STREAMS_UNI:        tp->max_streams_uni = (uint32_t)val; break;
         case NXP_TP_IDLE_TIMEOUT:           tp->idle_timeout_us = val * 1000; break;
+        case NXP_TP_MAX_EARLY_DATA:         tp->max_early_data = val; break;
+        case NXP_TP_ACTIVE_CID_LIMIT:       tp->active_cid_limit = (uint32_t)val; break;
         default: break; /* Ignore unknown params */
         }
 
@@ -256,6 +272,17 @@ static bool derive_handshake_and_app_keys(nxp_handshake *hs)
     }
     hs->app_keys.available = true;
 
+    /* Save master secret for resumption secret derivation (Phase 6) */
+    memcpy(hs->master_secret, master_secret, NXP_HASH_LEN);
+    hs->has_master_secret = true;
+
+    /* Derive resumption secret from master_secret + transcript */
+    if (nxp_crypto_derive_resumption_secret(master_secret,
+                                              hs->transcript, hs->transcript_len,
+                                              hs->resumption_secret)) {
+        hs->has_resumption_secret = true;
+    }
+
     /* Wipe intermediate secrets */
     memset(handshake_secret, 0, sizeof(handshake_secret));
     memset(client_hs_secret, 0, sizeof(client_hs_secret));
@@ -301,6 +328,9 @@ void nxp_handshake_destroy(nxp_handshake *hs) {
     memset(&hs->initial_keys, 0, sizeof(hs->initial_keys));
     memset(&hs->handshake_keys, 0, sizeof(hs->handshake_keys));
     memset(&hs->app_keys, 0, sizeof(hs->app_keys));
+    memset(hs->resumption_secret, 0, sizeof(hs->resumption_secret));
+    memset(hs->master_secret, 0, sizeof(hs->master_secret));
+    memset(&hs->zero_rtt_keys, 0, sizeof(hs->zero_rtt_keys));
 
     free(hs);
 }
@@ -498,6 +528,7 @@ nxp_result nxp_handshake_recv_crypto(
         return process_client_hello(hs, data, len);
 
     case NXP_HS_WAIT_SERVER_HELLO:
+    case NXP_HS_ZERO_RTT_SENT:
         if (level != NXP_CRYPTO_INITIAL)
             return NXP_ERROR(NXP_ERR_HANDSHAKE_FAIL);
         return process_server_hello(hs, data, len);
@@ -543,4 +574,70 @@ size_t nxp_handshake_fill_crypto(
     hs->send_offset += to_copy;
 
     return to_copy;
+}
+
+/* ── Phase 6: 0-RTT Client Start ─────────────────────── */
+
+nxp_result nxp_handshake_start_client_0rtt(
+    nxp_handshake *hs,
+    const nxp_conn_id *server_dcid,
+    const uint8_t *ticket, size_t ticket_len,
+    const uint8_t server_key[32])
+{
+    if (hs->state != NXP_HS_IDLE || hs->is_server) {
+        return NXP_ERROR(NXP_ERR_INVALID_ARGUMENT);
+    }
+
+    /* Validate and decrypt the session ticket */
+    uint8_t resumption_secret[NXP_HASH_LEN];
+    nxp_aead_algo algo;
+    uint8_t tp_buf[256];
+    size_t tp_len = 0;
+
+    nxp_result r = nxp_session_ticket_validate(
+        server_key, ticket, ticket_len, 0 /* now_us checked by caller */,
+        resumption_secret, &algo, tp_buf, sizeof(tp_buf), &tp_len
+    );
+    if (r.code != NXP_OK) return r;
+
+    /* Derive initial keys (same as 1-RTT) */
+    if (!nxp_crypto_derive_initial_keys(server_dcid, &hs->initial_keys)) {
+        memset(resumption_secret, 0, sizeof(resumption_secret));
+        return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    }
+
+    /* Derive 0-RTT keys from the resumption secret */
+    if (!nxp_crypto_derive_zero_rtt_keys(resumption_secret, algo,
+                                           &hs->zero_rtt_keys)) {
+        memset(resumption_secret, 0, sizeof(resumption_secret));
+        return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    }
+
+    hs->selected_algo = algo;
+    hs->zero_rtt_attempted = true;
+
+    /* Save the ticket for reference */
+    if (ticket_len <= sizeof(hs->session_ticket)) {
+        memcpy(hs->session_ticket, ticket, ticket_len);
+        hs->session_ticket_len = ticket_len;
+        hs->has_session_ticket = true;
+    }
+
+    /* Encode ClientHello and set up send buffer */
+    hs->send_len = encode_client_hello(hs, hs->send_buf, sizeof(hs->send_buf));
+    if (hs->send_len == 0) {
+        memset(resumption_secret, 0, sizeof(resumption_secret));
+        return NXP_ERROR(NXP_ERR_INTERNAL);
+    }
+    hs->send_offset = 0;
+    hs->send_level = NXP_CRYPTO_INITIAL;
+
+    /* Add to transcript */
+    memcpy(hs->transcript, hs->send_buf, hs->send_len);
+    hs->transcript_len = hs->send_len;
+
+    memset(resumption_secret, 0, sizeof(resumption_secret));
+
+    hs->state = NXP_HS_ZERO_RTT_SENT;
+    return NXP_SUCCESS;
 }

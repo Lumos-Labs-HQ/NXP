@@ -16,11 +16,16 @@ add_subdirectory(platform)
 target_link_libraries(nxp_memory PRIVATE nxp_util)
 target_link_libraries(nxp_platform PRIVATE nxp_util nxp_memory)
 
-# Stub libraries for future phases (empty for now)
-add_library(nxp_congestion STATIC congestion/cc_stub.c)
+# Congestion control (Phase 7: BBR)
+add_library(nxp_congestion STATIC
+    congestion/delivery_rate.c
+    congestion/pacing.c
+    congestion/bbr.c
+)
 target_include_directories(nxp_congestion PUBLIC
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src/congestion
+    ${PROJECT_SOURCE_DIR}/src
 )
 
 add_library(nxp_crypto STATIC
@@ -28,13 +33,15 @@ add_library(nxp_crypto STATIC
     crypto/hkdf.c
     crypto/handshake_crypto.c
     crypto/header_protection.c
+    crypto/session_ticket.c
+    crypto/retry_token.c
 )
 target_include_directories(nxp_crypto PUBLIC
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src/crypto
     ${PROJECT_SOURCE_DIR}/src
 )
-target_link_libraries(nxp_crypto PRIVATE OpenSSL::Crypto)
+target_link_libraries(nxp_crypto PRIVATE OpenSSL::Crypto nxp_util)
 
 add_library(nxp_core STATIC
     core/packet.c
@@ -45,13 +52,14 @@ add_library(nxp_core STATIC
     core/scheduler.c
     core/connection.c
     core/handshake.c
+    core/migration.c
 )
 target_include_directories(nxp_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src
 )
-target_link_libraries(nxp_core PRIVATE nxp_util nxp_crypto)
+target_link_libraries(nxp_core PRIVATE nxp_util nxp_crypto nxp_congestion)
 
 # Public API (stub for now)
 add_library(nxp_api STATIC api/nxp_api_stub.c)

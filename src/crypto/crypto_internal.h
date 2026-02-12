@@ -202,4 +202,90 @@ void nxp_crypto_make_nonce(
     uint8_t out[NXP_HASH_LEN]
 );
 
+/* ── Session Tickets (Phase 6) ───────────────────────── */
+
+/*
+ * Create an encrypted session ticket for 0-RTT resumption.
+ * The ticket is encrypted with AES-256-GCM using the server key.
+ */
+[[nodiscard]] nxp_result nxp_session_ticket_create(
+    const uint8_t server_key[NXP_AES_256_KEY_LEN],
+    const uint8_t resumption_secret[NXP_HASH_LEN],
+    nxp_aead_algo algo,
+    const uint8_t *transport_params, size_t tp_len,
+    uint64_t now_us,
+    uint8_t *ticket_out, size_t ticket_cap, size_t *ticket_len_out
+);
+
+/*
+ * Validate and decrypt a session ticket.
+ * Checks expiry and extracts resumption secret and transport params.
+ */
+[[nodiscard]] nxp_result nxp_session_ticket_validate(
+    const uint8_t server_key[NXP_AES_256_KEY_LEN],
+    const uint8_t *ticket, size_t ticket_len,
+    uint64_t now_us,
+    uint8_t resumption_secret_out[NXP_HASH_LEN],
+    nxp_aead_algo *algo_out,
+    uint8_t *transport_params_out, size_t tp_cap, size_t *tp_len_out
+);
+
+/*
+ * Derive 0-RTT keys from a resumption secret.
+ * Only client->server direction is meaningful for 0-RTT.
+ */
+[[nodiscard]] bool nxp_crypto_derive_zero_rtt_keys(
+    const uint8_t resumption_secret[NXP_HASH_LEN],
+    nxp_aead_algo algo,
+    nxp_crypto_state *zero_rtt_state
+);
+
+/*
+ * Derive the resumption secret from the master secret and transcript.
+ * Called after handshake completes to enable session ticket creation.
+ */
+[[nodiscard]] bool nxp_crypto_derive_resumption_secret(
+    const uint8_t master_secret[NXP_HASH_LEN],
+    const uint8_t *transcript, size_t transcript_len,
+    uint8_t resumption_secret_out[NXP_HASH_LEN]
+);
+
+/* ── Replay Protection (Phase 6) ─────────────────────── */
+
+typedef struct nxp_strike_register nxp_strike_register;
+
+[[nodiscard]] nxp_strike_register *nxp_strike_register_create(void);
+void nxp_strike_register_destroy(nxp_strike_register *reg);
+
+[[nodiscard]] bool nxp_strike_register_check_and_add(
+    nxp_strike_register *reg,
+    const uint8_t *ticket_nonce, size_t nonce_len,
+    uint64_t now_us
+);
+
+/* ── Retry Tokens (Phase 6) ──────────────────────────── */
+
+/*
+ * Create a stateless retry token for address validation.
+ */
+[[nodiscard]] nxp_result nxp_retry_token_create(
+    const uint8_t server_key[NXP_AES_256_KEY_LEN],
+    const nxp_addr *client_addr,
+    const nxp_conn_id *original_dcid,
+    uint64_t now_us,
+    uint8_t *token_out, size_t token_cap, size_t *token_len_out
+);
+
+/*
+ * Validate a retry token. Checks decryption, expiry,
+ * client address match, and original DCID match.
+ */
+[[nodiscard]] nxp_result nxp_retry_token_validate(
+    const uint8_t server_key[NXP_AES_256_KEY_LEN],
+    const nxp_addr *client_addr,
+    const nxp_conn_id *original_dcid,
+    const uint8_t *token, size_t token_len,
+    uint64_t now_us
+);
+
 #endif /* NXP_CRYPTO_INTERNAL_H */
