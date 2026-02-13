@@ -5,6 +5,7 @@
  * using HMAC-SHA256 via OpenSSL 3.x EVP_MAC API.
  */
 #include "crypto_internal.h"
+#include "secure_mem.h"
 
 #include <openssl/evp.h>
 #include <openssl/core_names.h>
@@ -124,6 +125,8 @@ bool nxp_hkdf_expand(
         counter++;
     }
 
+    /* Phase 10: Wipe intermediate HMAC output */
+    nxp_secure_zero(t, sizeof(t));
     return true;
 }
 

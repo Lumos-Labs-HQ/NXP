@@ -16,6 +16,7 @@
 #include "hash_map.h"
 #include "util/varint.h"
 #include "congestion/bbr_internal.h"
+#include "crypto/secure_mem.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,12 @@ static void on_packet_acked(void *ctx, const nxp_sent_pkt *pkt) {
         nxp_stream_s *s = (nxp_stream_s *)nxp_hash_map_get(conn->streams, rec->stream_id);
         if (s != nullptr) {
             nxp_stream_on_ack(s, rec->offset, rec->len, rec->fin);
+
+            /* Phase 8: Notify writable if stream was blocked */
+            if (s->blocked && s->on_writable != nullptr) {
+                s->blocked = false;
+                s->on_writable(s->writable_user_data, rec->stream_id);
+            }
         }
     }
 
@@ -181,6 +188,13 @@ nxp_conn *nxp_conn_create(const nxp_conn_config *config, bool is_server) {
     nxp_pacer_init(&conn->pacer);
     nxp_dr_init(&conn->delivery_rate);
 
+    /* Phase 8: Heartbeat (disabled by default, user can enable) */
+    nxp_heartbeat_init(&conn->heartbeat, 0);
+
+    /* Phase 8: Auto-reconnect (disabled by default) */
+    conn->auto_reconnect = false;
+    conn->max_reconnect_attempts = 3;
+
     return conn;
 }
 
@@ -208,9 +222,9 @@ void nxp_conn_destroy(nxp_conn *conn) {
         conn->handshake = nullptr;
     }
 
-    /* Wipe crypto keys */
-    memset(&conn->crypto, 0, sizeof(conn->crypto));
-    memset(&conn->zero_rtt_crypto, 0, sizeof(conn->zero_rtt_crypto));
+    /* Wipe crypto keys (secure: compiler cannot optimize away) */
+    nxp_secure_zero(&conn->crypto, sizeof(conn->crypto));
+    nxp_secure_zero(&conn->zero_rtt_crypto, sizeof(conn->zero_rtt_crypto));
 
     /* Phase 7: CC cleanup */
     if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
@@ -391,6 +405,12 @@ static nxp_result process_frames(nxp_conn *conn, const uint8_t *payload,
                     conn->handshake->has_session_ticket = true;
                 }
             }
+            break;
+
+        /* Phase 8: Heartbeat frame */
+        case NXP_FRAME_HEARTBEAT:
+            nxp_heartbeat_on_recv(&conn->heartbeat,
+                                   frame.heartbeat.timestamp_us, now_us);
             break;
 
         default:
@@ -579,6 +599,8 @@ nxp_result nxp_conn_recv(nxp_conn *conn, const uint8_t *data,
 
     const uint8_t *payload;
     size_t payload_len;
+    static _Thread_local uint8_t decrypt_buf[NXP_PACKET_BUF_SIZE];
+    bool did_decrypt = false;
 
     if (conn->crypto.available) {
         /* Decrypt payload with AEAD */
@@ -589,8 +611,6 @@ nxp_result nxp_conn_recv(nxp_conn *conn, const uint8_t *data,
         uint8_t nonce[NXP_AEAD_IV_LEN];
         nxp_crypto_make_nonce(conn->crypto.recv.iv, full_pn, nonce);
 
-        /* Use a static buffer for decrypted payload */
-        static _Thread_local uint8_t decrypt_buf[NXP_PACKET_BUF_SIZE];
         ssize_t pt_len = nxp_aead_decrypt(conn->crypto.algo,
                                            conn->crypto.recv.key,
                                            conn->crypto.recv.key_len,
@@ -601,13 +621,21 @@ nxp_result nxp_conn_recv(nxp_conn *conn, const uint8_t *data,
 
         payload = decrypt_buf;
         payload_len = (size_t)pt_len;
+        did_decrypt = true;
     } else {
         /* Plaintext mode (Phase 4 compatibility) */
         payload = pkt_buf + shdr.header_len;
         payload_len = len - shdr.header_len;
     }
 
-    return process_frames(conn, payload, payload_len, now_us);
+    nxp_result res = process_frames(conn, payload, payload_len, now_us);
+
+    /* Phase 10: Securely wipe decrypted plaintext from thread-local buffer */
+    if (did_decrypt) {
+        nxp_secure_zero(decrypt_buf, payload_len);
+    }
+
+    return res;
 }
 
 /* ── Generate Handshake Packet (Phase 5) ─────────────── */
@@ -775,7 +803,8 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
                                    conn->send_conn_close ||
                                    conn->send_ping ||
                                    nxp_flow_should_update(&conn->conn_flow) ||
-                                   nxp_migration_has_pending(&conn->migration);
+                                   nxp_migration_has_pending(&conn->migration) ||
+                                   nxp_heartbeat_has_pending(&conn->heartbeat);
         if (!has_control_frames) return 0;
     }
 
@@ -902,7 +931,27 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
         }
     }
 
-    /* 6. STREAM frames from the scheduler (CC-gated) */
+    /* 6. Heartbeat frames (Phase 8) */
+    if (conn->heartbeat.send_echo) {
+        size_t n = nxp_frame_encode_heartbeat(conn->heartbeat.echo_timestamp,
+                     frame_buf + frame_pos, frame_space - frame_pos);
+        if (n > 0) {
+            frame_pos += n;
+            has_ack_eliciting = true;
+            conn->heartbeat.send_echo = false;
+        }
+    }
+    if (conn->heartbeat.send_heartbeat) {
+        size_t n = nxp_frame_encode_heartbeat(conn->heartbeat.pending_timestamp,
+                     frame_buf + frame_pos, frame_space - frame_pos);
+        if (n > 0) {
+            frame_pos += n;
+            has_ack_eliciting = true;
+            conn->heartbeat.send_heartbeat = false;
+        }
+    }
+
+    /* 7. STREAM frames from the scheduler (CC-gated) */
     /* Phase 7: Check cwnd before sending data */
     bool cc_allows = true;
     if (conn->cc_ops != nullptr && conn->cc_state != nullptr) {
@@ -935,6 +984,17 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
         }
         if ((uint64_t)max_data > fc_remain) max_data = (size_t)fc_remain;
 
+        /* Phase 8: Per-stream rate limiting */
+        if (s->rate_limit.enabled) {
+            nxp_stream_rate_update(&s->rate_limit, now_us);
+            uint64_t budget = nxp_stream_rate_budget(&s->rate_limit);
+            if (budget == 0) {
+                s->blocked = true;
+                continue;
+            }
+            if ((uint64_t)max_data > budget) max_data = (size_t)budget;
+        }
+
         if (!nxp_stream_fill_frame(s, &sf, max_data)) {
             continue;
         }
@@ -953,6 +1013,11 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
         /* Track for flow control */
         nxp_flow_on_send(&conn->conn_flow, sf.length);
         nxp_flow_on_send(&s->flow, sf.length);
+
+        /* Phase 8: Track per-stream rate limit */
+        if (s->rate_limit.enabled) {
+            nxp_stream_rate_on_send(&s->rate_limit, (uint32_t)sf.length);
+        }
 
         /* Record stream frame in sent packet metadata */
         nxp_stream_frame_record *rec = &sent_meta.frames[sent_meta.frame_count];
@@ -1074,6 +1139,10 @@ uint64_t nxp_conn_timeout(const nxp_conn *conn, uint64_t now_us) {
         }
     }
 
+    /* Phase 8: Heartbeat timer */
+    uint64_t hb_t = nxp_heartbeat_next_timeout(&conn->heartbeat);
+    if (hb_t < timeout) timeout = hb_t;
+
     return timeout;
 }
 
@@ -1094,6 +1163,13 @@ void nxp_conn_on_timeout(nxp_conn *conn, uint64_t now_us) {
         if (conn->ack.pto_count > 0) {
             conn->send_ping = true;
         }
+    }
+
+    /* Phase 8: Heartbeat timer check */
+    nxp_heartbeat_check(&conn->heartbeat, now_us);
+    if (nxp_heartbeat_is_dead(&conn->heartbeat)) {
+        /* Connection is dead - close it */
+        conn->state = NXP_CONN_CLOSED;
     }
 }
 
@@ -1220,5 +1296,35 @@ nxp_result nxp_conn_start_handshake(nxp_conn *conn,
     }
 
     conn->handshake = hs;
+    return NXP_SUCCESS;
+}
+
+/* ── Phase 8: Built-in Features ──────────────────────── */
+
+void nxp_conn_set_heartbeat(nxp_conn *conn, uint64_t interval_us) {
+    nxp_heartbeat_init(&conn->heartbeat, interval_us);
+}
+
+void nxp_conn_set_auto_reconnect(nxp_conn *conn, bool enable,
+                                  uint32_t max_attempts) {
+    conn->auto_reconnect = enable;
+    conn->max_reconnect_attempts = max_attempts;
+}
+
+nxp_result nxp_conn_set_stream_rate(nxp_conn *conn, uint64_t stream_id,
+                                     uint64_t rate_bps) {
+    nxp_stream_s *s = (nxp_stream_s *)nxp_hash_map_get(conn->streams, stream_id);
+    if (s == nullptr) return NXP_ERROR(NXP_ERR_STREAM_CLOSED);
+    nxp_stream_rate_set(&s->rate_limit, rate_bps);
+    return NXP_SUCCESS;
+}
+
+nxp_result nxp_conn_set_on_writable(nxp_conn *conn, uint64_t stream_id,
+                                     void (*cb)(void *user_data, uint64_t stream_id),
+                                     void *user_data) {
+    nxp_stream_s *s = (nxp_stream_s *)nxp_hash_map_get(conn->streams, stream_id);
+    if (s == nullptr) return NXP_ERROR(NXP_ERR_STREAM_CLOSED);
+    s->on_writable = cb;
+    s->writable_user_data = user_data;
     return NXP_SUCCESS;
 }

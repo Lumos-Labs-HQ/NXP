@@ -16,6 +16,7 @@
  * can only be used once.
  */
 #include "crypto_internal.h"
+#include "secure_mem.h"
 #include "util/random.h"
 
 #include <stdlib.h>
@@ -166,14 +167,14 @@ nxp_result nxp_session_ticket_create(
         ticket_out + NXP_TICKET_NONCE_LEN
     );
     if (ct_len < 0) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
     }
 
     *ticket_len_out = NXP_TICKET_NONCE_LEN + (size_t)ct_len;
 
     /* Wipe plaintext */
-    memset(pt, 0, sizeof(pt));
+    nxp_secure_zero(pt, sizeof(pt));
 
     return NXP_SUCCESS;
 }
@@ -221,13 +222,13 @@ nxp_result nxp_session_ticket_validate(
     /* Parse plaintext */
     size_t pos = 0;
     if ((size_t)pt_len < 1 + 8 + 4 + 1 + NXP_HASH_LEN + 2) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
 
     /* Version check */
     if (pt[pos++] != NXP_TICKET_VERSION) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
 
@@ -247,7 +248,7 @@ nxp_result nxp_session_ticket_validate(
     /* Check expiry */
     uint64_t max_age = (uint64_t)lifetime * 1000000ULL;
     if (now_us > creation_time + max_age) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
 
@@ -266,7 +267,7 @@ nxp_result nxp_session_ticket_validate(
 
     if (tp_len_val > 0) {
         if (pos + tp_len_val > (size_t)pt_len) {
-            memset(pt, 0, sizeof(pt));
+            nxp_secure_zero(pt, sizeof(pt));
             return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
         }
         if (transport_params_out != nullptr && tp_cap >= tp_len_val) {
@@ -275,7 +276,7 @@ nxp_result nxp_session_ticket_validate(
     }
 
     /* Wipe plaintext */
-    memset(pt, 0, sizeof(pt));
+    nxp_secure_zero(pt, sizeof(pt));
 
     return NXP_SUCCESS;
 }
@@ -310,7 +311,7 @@ bool nxp_crypto_derive_zero_rtt_keys(
     if (!nxp_hkdf_expand_label(early_secret, NXP_HASH_LEN,
                                 "c e traffic", nullptr, 0,
                                 client_early_secret, NXP_HASH_LEN)) {
-        memset(early_secret, 0, sizeof(early_secret));
+        nxp_secure_zero(early_secret, sizeof(early_secret));
         return false;
     }
 
@@ -319,8 +320,8 @@ bool nxp_crypto_derive_zero_rtt_keys(
 
     if (!nxp_crypto_derive_traffic_keys(client_early_secret, NXP_HASH_LEN,
                                           algo, &zero_rtt_state->send)) {
-        memset(early_secret, 0, sizeof(early_secret));
-        memset(client_early_secret, 0, sizeof(client_early_secret));
+        nxp_secure_zero(early_secret, sizeof(early_secret));
+        nxp_secure_zero(client_early_secret, sizeof(client_early_secret));
         return false;
     }
 
@@ -329,8 +330,8 @@ bool nxp_crypto_derive_zero_rtt_keys(
     zero_rtt_state->available = true;
 
     /* Wipe intermediates */
-    memset(early_secret, 0, sizeof(early_secret));
-    memset(client_early_secret, 0, sizeof(client_early_secret));
+    nxp_secure_zero(early_secret, sizeof(early_secret));
+    nxp_secure_zero(client_early_secret, sizeof(client_early_secret));
 
     return true;
 }
@@ -354,6 +355,6 @@ bool nxp_crypto_derive_resumption_secret(
                                       "resumption", transcript_hash, NXP_HASH_LEN,
                                       resumption_secret_out, NXP_HASH_LEN);
 
-    memset(transcript_hash, 0, sizeof(transcript_hash));
+    nxp_secure_zero(transcript_hash, sizeof(transcript_hash));
     return ok;
 }

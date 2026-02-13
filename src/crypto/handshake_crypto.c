@@ -5,6 +5,7 @@
  * initial key derivation (from CID), and traffic key derivation.
  */
 #include "crypto_internal.h"
+#include "secure_mem.h"
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -176,15 +177,15 @@ bool nxp_crypto_derive_initial_keys(
 
     state->available = true;
 
-    /* Wipe intermediaries */
-    memset(initial_secret, 0, sizeof(initial_secret));
-    memset(client_secret, 0, sizeof(client_secret));
-    memset(server_secret, 0, sizeof(server_secret));
+    /* Phase 10: Securely wipe intermediaries */
+    nxp_secure_zero(initial_secret, sizeof(initial_secret));
+    nxp_secure_zero(client_secret, sizeof(client_secret));
+    nxp_secure_zero(server_secret, sizeof(server_secret));
     return true;
 
 fail:
-    memset(initial_secret, 0, sizeof(initial_secret));
-    memset(client_secret, 0, sizeof(client_secret));
-    memset(server_secret, 0, sizeof(server_secret));
+    nxp_secure_zero(initial_secret, sizeof(initial_secret));
+    nxp_secure_zero(client_secret, sizeof(client_secret));
+    nxp_secure_zero(server_secret, sizeof(server_secret));
     return false;
 }

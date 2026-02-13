@@ -19,6 +19,8 @@
 #include "congestion/cc_interface.h"
 #include "congestion/pacing.h"
 #include "congestion/delivery_rate.h"
+#include "heartbeat_internal.h"
+#include "stream_rate.h"
 
 /* Forward declaration for handshake */
 typedef struct nxp_handshake nxp_handshake;
@@ -158,6 +160,14 @@ struct nxp_stream_s {
     /* Per-stream flow control */
     nxp_flow_ctrl flow;
 
+    /* Phase 8: Per-stream rate limiting */
+    nxp_stream_rate rate_limit;
+
+    /* Phase 8: Backpressure callback */
+    void (*on_writable)(void *user_data, uint64_t stream_id);
+    void  *writable_user_data;
+    bool   blocked;             /* Stream is blocked (send buffer full) */
+
     /* Scheduler linkage (circular doubly-linked list) */
     nxp_stream_s *sched_next;
     nxp_stream_s *sched_prev;
@@ -209,6 +219,16 @@ struct nxp_conn {
     void               *cc_state;      /* Opaque CC state */
     nxp_pacer           pacer;         /* Packet pacing */
     nxp_delivery_rate   delivery_rate; /* Bandwidth sampling */
+
+    /* Phase 8: Heartbeat / keep-alive */
+    nxp_heartbeat       heartbeat;
+
+    /* Phase 8: Auto-reconnect state (client only) */
+    bool                auto_reconnect;       /* Feature enabled? */
+    uint8_t             saved_ticket[256];    /* Session ticket for 0-RTT */
+    size_t              saved_ticket_len;
+    uint32_t            reconnect_attempts;
+    uint32_t            max_reconnect_attempts;
 
     /* Streams */
     nxp_hash_map  *streams;
@@ -394,5 +414,23 @@ void nxp_conn_on_timeout(nxp_conn *conn, uint64_t now_us);
 
 /* Close the connection with an error code. */
 nxp_result nxp_conn_close(nxp_conn *conn, uint64_t error_code);
+
+/* ── Phase 8: Built-in Features API ───────────────────── */
+
+/* Set heartbeat interval (0 to disable). */
+void nxp_conn_set_heartbeat(nxp_conn *conn, uint64_t interval_us);
+
+/* Enable/disable auto-reconnect (client only). */
+void nxp_conn_set_auto_reconnect(nxp_conn *conn, bool enable,
+                                  uint32_t max_attempts);
+
+/* Set per-stream rate limit (bytes/sec, 0 = unlimited). */
+nxp_result nxp_conn_set_stream_rate(nxp_conn *conn, uint64_t stream_id,
+                                     uint64_t rate_bps);
+
+/* Register a callback invoked when a blocked stream becomes writable. */
+nxp_result nxp_conn_set_on_writable(nxp_conn *conn, uint64_t stream_id,
+                                     void (*cb)(void *user_data, uint64_t stream_id),
+                                     void *user_data);
 
 #endif /* NXP_CONNECTION_INTERNAL_H */

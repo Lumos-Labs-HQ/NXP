@@ -12,6 +12,7 @@
  */
 #include "handshake_internal.h"
 #include "crypto_internal.h"
+#include "crypto/secure_mem.h"
 #include "util/varint.h"
 
 #include <stdlib.h>
@@ -283,20 +284,22 @@ static bool derive_handshake_and_app_keys(nxp_handshake *hs)
         hs->has_resumption_secret = true;
     }
 
-    /* Wipe intermediate secrets */
-    memset(handshake_secret, 0, sizeof(handshake_secret));
-    memset(client_hs_secret, 0, sizeof(client_hs_secret));
-    memset(server_hs_secret, 0, sizeof(server_hs_secret));
-    memset(derived, 0, sizeof(derived));
-    memset(master_secret, 0, sizeof(master_secret));
-    memset(client_app_secret, 0, sizeof(client_app_secret));
-    memset(server_app_secret, 0, sizeof(server_app_secret));
+    /* Phase 10: Securely wipe all intermediate secrets */
+    nxp_secure_zero(transcript_hash, sizeof(transcript_hash));
+    nxp_secure_zero(handshake_secret, sizeof(handshake_secret));
+    nxp_secure_zero(client_hs_secret, sizeof(client_hs_secret));
+    nxp_secure_zero(server_hs_secret, sizeof(server_hs_secret));
+    nxp_secure_zero(derived, sizeof(derived));
+    nxp_secure_zero(master_secret, sizeof(master_secret));
+    nxp_secure_zero(client_app_secret, sizeof(client_app_secret));
+    nxp_secure_zero(server_app_secret, sizeof(server_app_secret));
     return true;
 
 fail:
-    memset(handshake_secret, 0, sizeof(handshake_secret));
-    memset(client_hs_secret, 0, sizeof(client_hs_secret));
-    memset(server_hs_secret, 0, sizeof(server_hs_secret));
+    nxp_secure_zero(transcript_hash, sizeof(transcript_hash));
+    nxp_secure_zero(handshake_secret, sizeof(handshake_secret));
+    nxp_secure_zero(client_hs_secret, sizeof(client_hs_secret));
+    nxp_secure_zero(server_hs_secret, sizeof(server_hs_secret));
     return false;
 }
 
@@ -322,15 +325,15 @@ nxp_handshake *nxp_handshake_create(bool is_server) {
 void nxp_handshake_destroy(nxp_handshake *hs) {
     if (hs == nullptr) return;
 
-    /* Wipe all key material */
-    memset(hs->local_privkey, 0, sizeof(hs->local_privkey));
-    memset(hs->shared_secret, 0, sizeof(hs->shared_secret));
-    memset(&hs->initial_keys, 0, sizeof(hs->initial_keys));
-    memset(&hs->handshake_keys, 0, sizeof(hs->handshake_keys));
-    memset(&hs->app_keys, 0, sizeof(hs->app_keys));
-    memset(hs->resumption_secret, 0, sizeof(hs->resumption_secret));
-    memset(hs->master_secret, 0, sizeof(hs->master_secret));
-    memset(&hs->zero_rtt_keys, 0, sizeof(hs->zero_rtt_keys));
+    /* Phase 10: Securely wipe all key material */
+    nxp_secure_zero(hs->local_privkey, sizeof(hs->local_privkey));
+    nxp_secure_zero(hs->shared_secret, sizeof(hs->shared_secret));
+    nxp_secure_zero(&hs->initial_keys, sizeof(hs->initial_keys));
+    nxp_secure_zero(&hs->handshake_keys, sizeof(hs->handshake_keys));
+    nxp_secure_zero(&hs->app_keys, sizeof(hs->app_keys));
+    nxp_secure_zero(hs->resumption_secret, sizeof(hs->resumption_secret));
+    nxp_secure_zero(hs->master_secret, sizeof(hs->master_secret));
+    nxp_secure_zero(&hs->zero_rtt_keys, sizeof(hs->zero_rtt_keys));
 
     free(hs);
 }
@@ -602,14 +605,14 @@ nxp_result nxp_handshake_start_client_0rtt(
 
     /* Derive initial keys (same as 1-RTT) */
     if (!nxp_crypto_derive_initial_keys(server_dcid, &hs->initial_keys)) {
-        memset(resumption_secret, 0, sizeof(resumption_secret));
+        nxp_secure_zero(resumption_secret, sizeof(resumption_secret));
         return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
     }
 
     /* Derive 0-RTT keys from the resumption secret */
     if (!nxp_crypto_derive_zero_rtt_keys(resumption_secret, algo,
                                            &hs->zero_rtt_keys)) {
-        memset(resumption_secret, 0, sizeof(resumption_secret));
+        nxp_secure_zero(resumption_secret, sizeof(resumption_secret));
         return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
     }
 
@@ -626,7 +629,7 @@ nxp_result nxp_handshake_start_client_0rtt(
     /* Encode ClientHello and set up send buffer */
     hs->send_len = encode_client_hello(hs, hs->send_buf, sizeof(hs->send_buf));
     if (hs->send_len == 0) {
-        memset(resumption_secret, 0, sizeof(resumption_secret));
+        nxp_secure_zero(resumption_secret, sizeof(resumption_secret));
         return NXP_ERROR(NXP_ERR_INTERNAL);
     }
     hs->send_offset = 0;
@@ -636,7 +639,7 @@ nxp_result nxp_handshake_start_client_0rtt(
     memcpy(hs->transcript, hs->send_buf, hs->send_len);
     hs->transcript_len = hs->send_len;
 
-    memset(resumption_secret, 0, sizeof(resumption_secret));
+    nxp_secure_zero(resumption_secret, sizeof(resumption_secret));
 
     hs->state = NXP_HS_ZERO_RTT_SENT;
     return NXP_SUCCESS;

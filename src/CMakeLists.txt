@@ -35,6 +35,7 @@ add_library(nxp_crypto STATIC
     crypto/header_protection.c
     crypto/session_ticket.c
     crypto/retry_token.c
+    crypto/proof_of_work.c
 )
 target_include_directories(nxp_crypto PUBLIC
     ${PROJECT_SOURCE_DIR}/include
@@ -42,6 +43,9 @@ target_include_directories(nxp_crypto PUBLIC
     ${PROJECT_SOURCE_DIR}/src
 )
 target_link_libraries(nxp_crypto PRIVATE OpenSSL::Crypto nxp_util)
+if(NOT WIN32)
+    target_compile_definitions(nxp_crypto PRIVATE _DEFAULT_SOURCE)
+endif()
 
 add_library(nxp_core STATIC
     core/packet.c
@@ -53,6 +57,9 @@ add_library(nxp_core STATIC
     core/connection.c
     core/handshake.c
     core/migration.c
+    core/heartbeat.c
+    core/listener.c
+    core/session_export.c
 )
 target_include_directories(nxp_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
@@ -60,6 +67,9 @@ target_include_directories(nxp_core PUBLIC
     ${PROJECT_SOURCE_DIR}/src
 )
 target_link_libraries(nxp_core PRIVATE nxp_util nxp_crypto nxp_congestion)
+if(NOT WIN32)
+    target_compile_definitions(nxp_core PRIVATE _DEFAULT_SOURCE)
+endif()
 
 # Public API (stub for now)
 add_library(nxp_api STATIC api/nxp_api_stub.c)

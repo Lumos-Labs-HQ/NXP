@@ -12,6 +12,7 @@
  * Encrypted with AES-256-GCM using a server-local key.
  */
 #include "crypto_internal.h"
+#include "secure_mem.h"
 #include "nxp/nxp_types.h"
 #include "util/random.h"
 
@@ -80,12 +81,12 @@ nxp_result nxp_retry_token_create(
         pt, pt_len, token_out + NXP_RETRY_TOKEN_NONCE_LEN
     );
     if (ct_len < 0) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
     }
 
     *token_len_out = NXP_RETRY_TOKEN_NONCE_LEN + (size_t)ct_len;
-    memset(pt, 0, sizeof(pt));
+    nxp_secure_zero(pt, sizeof(pt));
 
     return NXP_SUCCESS;
 }
@@ -126,11 +127,11 @@ nxp_result nxp_retry_token_validate(
 
     /* Version check */
     if ((size_t)pt_len < 1 + 8 + 28 + 1) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
     if (pt[pos++] != NXP_RETRY_TOKEN_VERSION) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
 
@@ -140,13 +141,13 @@ nxp_result nxp_retry_token_validate(
         creation_time |= (uint64_t)pt[pos++] << (uint64_t)(i * 8);
     }
     if (now_us > creation_time + NXP_RETRY_TOKEN_MAX_AGE_US) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
 
     /* Client address check */
     if (memcmp(pt + pos, client_addr->raw, 28) != 0) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
     pos += 28;
@@ -154,20 +155,20 @@ nxp_result nxp_retry_token_validate(
     /* Original DCID check */
     uint8_t dcid_len = pt[pos++];
     if (dcid_len != original_dcid->len) {
-        memset(pt, 0, sizeof(pt));
+        nxp_secure_zero(pt, sizeof(pt));
         return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
     }
     if (dcid_len > 0) {
         if (pos + dcid_len > (size_t)pt_len) {
-            memset(pt, 0, sizeof(pt));
+            nxp_secure_zero(pt, sizeof(pt));
             return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
         }
         if (memcmp(pt + pos, original_dcid->data, dcid_len) != 0) {
-            memset(pt, 0, sizeof(pt));
+            nxp_secure_zero(pt, sizeof(pt));
             return NXP_ERROR(NXP_ERR_TOKEN_INVALID);
         }
     }
 
-    memset(pt, 0, sizeof(pt));
+    nxp_secure_zero(pt, sizeof(pt));
     return NXP_SUCCESS;
 }
