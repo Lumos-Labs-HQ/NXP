@@ -49,6 +49,7 @@ typedef struct nxp_api_conn {
     nxp_conn_cb            on_connected;
     nxp_conn_cb            on_closed;
     void                  *cb_user_data; /* For on_connected / on_closed */
+    nxp_conn_state         prev_state;   /* For state transition detection */
 
     /* Application user data (via set/get_user_data) */
     void                  *app_user_data;

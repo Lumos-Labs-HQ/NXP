@@ -29,6 +29,10 @@ void nxp_conn_close(nxp_conn *conn, uint64_t error_code);
 /* Get connection statistics */
 [[nodiscard]] nxp_conn_stats nxp_conn_get_stats(const nxp_conn *conn);
 
+/* Set connected/closed callbacks (for server-accepted connections) */
+void nxp_conn_set_callbacks(nxp_conn *conn, nxp_conn_cb on_connected,
+                             nxp_conn_cb on_closed, void *user_data);
+
 /* Set callback for incoming streams (server-side) */
 void nxp_conn_set_stream_accept_cb(nxp_conn *conn, nxp_stream_accept_cb cb, void *user_data);
 

@@ -208,6 +208,16 @@ static nxp_result listener_accept(nxp_listener_s *ls,
 
     ls->total_accepted++;
 
+    /* Start handshake with client's initial DCID for key derivation.
+     * Must happen BEFORE nxp_conn_recv so the handshake context
+     * (and initial crypto keys) exist when the packet is processed. */
+    nxp_result hs_r = nxp_conn_start_handshake(conn, &hdr->dcid);
+    if (nxp_result_is_err(hs_r)) {
+        nxp_listener_remove_conn(ls, conn);
+        ls->total_rejected++;
+        return hs_r;
+    }
+
     /* Feed the initial datagram to the new connection */
     (void)nxp_conn_recv(conn, data, len, now_us);
 

@@ -21,6 +21,7 @@ static void on_conn_timer(nxp_event_loop *loop, void *user_data);
 static void on_listener_socket_event(nxp_event_loop *loop, nxp_socket *sock,
                                       uint32_t events, void *user_data);
 static void on_listener_timer(nxp_event_loop *loop, void *user_data);
+static void dispatch_listener_conn_events(nxp_listener *ln);
 static void listener_on_new_conn_cb(nxp_conn *conn, void *user_data);
 
 /* ── API Conn linked-list helpers ────────────────────── */
@@ -131,23 +132,24 @@ static void on_conn_socket_event(nxp_event_loop *loop, nxp_socket *sock,
             ssize_t n = nxp_socket_recvfrom(ac->sock, buf, sizeof(buf), &from);
             if (n <= 0) break;
 
-            nxp_conn_state prev = ac->conn->state;
             uint64_t now = nxp_time_now_us();
             (void)nxp_conn_recv(ac->conn, buf, (size_t)n, now);
             nxp_conn_state cur = ac->conn->state;
 
             /* Detect transitions for user callbacks */
-            if (prev != NXP_CONN_ESTABLISHED && cur == NXP_CONN_ESTABLISHED) {
+            if (ac->prev_state != NXP_CONN_ESTABLISHED && cur == NXP_CONN_ESTABLISHED) {
                 if (ac->on_connected != nullptr) {
                     ac->on_connected(ac->conn, ac->cb_user_data);
                 }
             }
             if ((cur == NXP_CONN_CLOSED || cur == NXP_CONN_DRAINING) &&
-                prev != NXP_CONN_CLOSED && prev != NXP_CONN_DRAINING) {
+                ac->prev_state != NXP_CONN_CLOSED && ac->prev_state != NXP_CONN_DRAINING) {
                 if (ac->on_closed != nullptr) {
                     ac->on_closed(ac->conn, ac->cb_user_data);
                 }
             }
+
+            ac->prev_state = cur;
         }
     }
 
@@ -164,6 +166,34 @@ static void on_conn_timer(nxp_event_loop *loop, void *user_data) {
     nxp_conn_on_timeout(ac->conn, now);
     nxp_api_flush_conn(ac);
     nxp_api_rearm_timer(ac);
+}
+
+/* Check state transitions on all child connections of a listener
+ * and fire on_connected / on_closed callbacks as needed. */
+static void dispatch_listener_conn_events(nxp_listener *ln) {
+    for (nxp_api_conn *ac = g_nxp.conns; ac != nullptr; ac = ac->next) {
+        if (ac->parent_listener != ln) continue;
+
+        nxp_conn_state cur = ac->conn->state;
+        nxp_conn_state prev = ac->prev_state;
+
+        if (prev != NXP_CONN_ESTABLISHED && cur == NXP_CONN_ESTABLISHED) {
+            if (ac->on_connected != nullptr) {
+                ac->on_connected(ac->conn, ac->cb_user_data);
+            }
+        }
+        if ((cur == NXP_CONN_CLOSED || cur == NXP_CONN_DRAINING) &&
+            prev != NXP_CONN_CLOSED && prev != NXP_CONN_DRAINING) {
+            if (ac->on_closed != nullptr) {
+                ac->on_closed(ac->conn, ac->cb_user_data);
+            }
+        }
+
+        /* Also flush pending sends for child connections */
+        nxp_api_flush_conn(ac);
+
+        ac->prev_state = cur;
+    }
 }
 
 static void on_listener_socket_event(nxp_event_loop *loop, nxp_socket *sock,
@@ -184,6 +214,7 @@ static void on_listener_socket_event(nxp_event_loop *loop, nxp_socket *sock,
     }
 
     nxp_api_flush_listener(ln);
+    dispatch_listener_conn_events(ln);
     nxp_api_rearm_listener_timer(ln);
 }
 
@@ -195,6 +226,7 @@ static void on_listener_timer(nxp_event_loop *loop, void *user_data) {
     uint64_t now = nxp_time_now_us();
     nxp_listener_on_timeout(ln->ls, now);
     nxp_api_flush_listener(ln);
+    dispatch_listener_conn_events(ln);
     nxp_api_rearm_listener_timer(ln);
 }
 
@@ -203,11 +235,8 @@ static void on_listener_timer(nxp_event_loop *loop, void *user_data) {
 static void listener_on_new_conn_cb(nxp_conn *conn, void *user_data) {
     nxp_listener *ln = (nxp_listener *)user_data;
 
-    /* Start handshake on the server side.
-     * The listener has already fed the Initial packet to the connection
-     * via nxp_conn_recv, but the handshake context needs to be set up. */
-    nxp_conn_id peer_cid = conn->dcid;
-    (void)nxp_conn_start_handshake(conn, &peer_cid);
+    /* Handshake already started by listener_accept() before
+     * feeding the Initial packet to the connection. */
 
     /* Create API conn wrapper for this server-accepted connection.
      * Server connections share the LISTENER's socket (all connections
@@ -219,6 +248,7 @@ static void listener_on_new_conn_cb(nxp_conn *conn, void *user_data) {
     ac->sock = ln->sock;
     ac->owns_socket = false;
     ac->parent_listener = ln;
+    ac->prev_state = conn->state;
 
     api_conn_link(ac);
 
@@ -390,6 +420,7 @@ nxp_result nxp_connect(const nxp_config *config, const char *host,
     ac->on_connected = on_connected;
     ac->on_closed    = on_closed;
     ac->cb_user_data = user_data;
+    ac->prev_state   = conn->state;
 
     /* Register socket with event loop */
     r = nxp_event_loop_add_socket(g_nxp.loop, sock, NXP_EVENT_READ,
@@ -435,6 +466,16 @@ nxp_conn_stats nxp_conn_get_stats(const nxp_conn *conn) {
         return empty;
     }
     return conn->stats;
+}
+
+void nxp_conn_set_callbacks(nxp_conn *conn, nxp_conn_cb on_connected,
+                             nxp_conn_cb on_closed, void *user_data) {
+    if (conn == nullptr) return;
+    nxp_api_conn *ac = nxp_api_find_conn(conn);
+    if (ac == nullptr) return;
+    ac->on_connected = on_connected;
+    ac->on_closed    = on_closed;
+    ac->cb_user_data = user_data;
 }
 
 void nxp_conn_set_stream_accept_cb(nxp_conn *conn, nxp_stream_accept_cb cb,
