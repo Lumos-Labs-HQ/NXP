@@ -1245,7 +1245,7 @@ nxp_conn_state nxp_conn_get_state(const nxp_conn *conn) {
 
 /* ── Close ────────────────────────────────────────────── */
 
-nxp_result nxp_conn_close(nxp_conn *conn, uint64_t error_code) {
+nxp_result nxp_conn_initiate_close(nxp_conn *conn, uint64_t error_code) {
     if (conn->state == NXP_CONN_CLOSED ||
         conn->state == NXP_CONN_DRAINING) {
         return NXP_ERROR(NXP_ERR_CONNECTION_CLOSED);

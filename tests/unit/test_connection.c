@@ -205,7 +205,7 @@ NXP_TEST(conn_close) {
     nxp_conn_id dcid = { .len = 8 };
     nxp_conn_set_established(conn, &dcid);
 
-    NXP_ASSERT_OK(nxp_conn_close(conn, 0));
+    NXP_ASSERT_OK(nxp_conn_initiate_close(conn, 0));
     NXP_ASSERT(conn->send_conn_close);
 
     /* Generate the close packet */

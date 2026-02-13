@@ -71,17 +71,31 @@ if(NOT WIN32)
     target_compile_definitions(nxp_core PRIVATE _DEFAULT_SOURCE)
 endif()
 
-# Public API (stub for now)
-add_library(nxp_api STATIC api/nxp_api_stub.c)
+# Public API (Phase 11: real implementation)
+set(NXP_API_SOURCES
+    api/nxp_api.c
+    api/config.c
+    api/error.c
+)
+
+add_library(nxp_api STATIC ${NXP_API_SOURCES})
 target_include_directories(nxp_api PUBLIC
     ${PROJECT_SOURCE_DIR}/include
 )
+target_include_directories(nxp_api PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(nxp_api PRIVATE
+    nxp_core nxp_platform nxp_crypto nxp_congestion nxp_memory nxp_util
+)
+if(NOT WIN32)
+    target_compile_definitions(nxp_api PRIVATE _DEFAULT_SOURCE)
+endif()
 
 # Final shared library
-add_library(nxp SHARED api/nxp_api_stub.c)
+add_library(nxp SHARED ${NXP_API_SOURCES})
 target_link_libraries(nxp
     PRIVATE
-        nxp_api
         nxp_core
         nxp_congestion
         nxp_crypto
@@ -93,13 +107,17 @@ target_include_directories(nxp
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
 )
+if(NOT WIN32)
+    target_compile_definitions(nxp PRIVATE _DEFAULT_SOURCE)
+endif()
 
 # Static library variant
-add_library(nxp_static STATIC api/nxp_api_stub.c)
+add_library(nxp_static STATIC ${NXP_API_SOURCES})
 target_link_libraries(nxp_static
     PUBLIC
-        nxp_api
         nxp_core
         nxp_congestion
         nxp_crypto
@@ -111,4 +129,9 @@ target_include_directories(nxp_static
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
 )
+if(NOT WIN32)
+    target_compile_definitions(nxp_static PRIVATE _DEFAULT_SOURCE)
+endif()

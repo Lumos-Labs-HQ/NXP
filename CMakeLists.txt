@@ -11,6 +11,9 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# All static libs need PIC so they can be linked into the shared lib
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Export compile_commands.json for tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

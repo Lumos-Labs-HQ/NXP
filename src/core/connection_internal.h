@@ -413,7 +413,7 @@ void nxp_conn_on_timeout(nxp_conn *conn, uint64_t now_us);
 [[nodiscard]] nxp_conn_state nxp_conn_get_state(const nxp_conn *conn);
 
 /* Close the connection with an error code. */
-nxp_result nxp_conn_close(nxp_conn *conn, uint64_t error_code);
+nxp_result nxp_conn_initiate_close(nxp_conn *conn, uint64_t error_code);
 
 /* ── Phase 8: Built-in Features API ───────────────────── */
 
