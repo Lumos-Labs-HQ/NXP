@@ -544,7 +544,9 @@ nxp_result nxp_listen(const nxp_config *config, const char *bind_addr_str,
 void nxp_listener_close(nxp_listener *listener) {
     if (listener == nullptr) return;
 
-    /* Remove server-accepted connections that belong to this listener */
+    /* Remove API wrappers for server-accepted connections belonging to
+     * this listener.  Do NOT call nxp_conn_destroy here — the internal
+     * nxp_listener_destroy will handle that via its own conns[] array. */
     nxp_api_conn *ac = g_nxp.conns;
     while (ac != nullptr) {
         nxp_api_conn *next = ac->next;
@@ -553,8 +555,8 @@ void nxp_listener_close(nxp_listener *listener) {
             if (ac->timer != nullptr) {
                 nxp_event_loop_cancel_timer(g_nxp.loop, ac->timer);
             }
-            /* Don't close socket — listener owns it */
-            nxp_conn_destroy(ac->conn);
+            /* Don't close socket (listener owns it) and don't destroy
+             * ac->conn (nxp_listener_destroy will do it). */
             free(ac);
         }
         ac = next;
