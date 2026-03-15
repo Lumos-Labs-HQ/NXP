@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// status code for code running on the platform layer (e.g. socket errors, file I/O errors, etc.)
 typedef enum nxp_error_code {
     NXP_OK                     =  0,
     NXP_ERR_INVALID_ARGUMENT   = -1,
