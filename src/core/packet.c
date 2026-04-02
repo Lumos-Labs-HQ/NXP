@@ -9,6 +9,11 @@
 
 #include <string.h>
 
+
+/* ── Security Limits ── */
+#define NXP_MAX_TOKEN_LEN       1024
+#define NXP_MAX_PAYLOAD_LEN     65536
+
 /* ── Encoding ── */
 
 size_t nxp_pkt_encode_long_header(
@@ -198,12 +203,14 @@ nxp_result nxp_pkt_decode_long_header(
         size_t consumed = nxp_varint_decode(&buf[pos], buf_len - pos, &token_len);
         if (consumed == 0) return NXP_ERROR(NXP_ERR_INVALID_PACKET);
         pos += consumed;
+        
+        if (token_len > NXP_MAX_TOKEN_LEN) return NXP_ERROR(NXP_ERR_INVALID_PACKET);
 
         hdr->token_len = token_len;
         if (token_len > 0) {
-            if (pos + token_len > buf_len) return NXP_ERROR(NXP_ERR_INVALID_PACKET);
+            if (pos > buf_len || token_len > buf_len - pos) return NXP_ERROR(NXP_ERR_INVALID_PACKET);
             hdr->token = &buf[pos];
-            pos += token_len;
+            pos += (size_t)token_len;
         }
     }
 
@@ -222,6 +229,8 @@ nxp_result nxp_pkt_decode_long_header(
     size_t consumed = nxp_varint_decode(&buf[pos], buf_len - pos, &payload_len);
     if (consumed == 0) return NXP_ERROR(NXP_ERR_INVALID_PACKET);
     pos += consumed;
+    
+    if (payload_len > NXP_MAX_PAYLOAD_LEN) return NXP_ERROR(NXP_ERR_INVALID_PACKET);
     hdr->payload_len = payload_len;
 
     /* Packet number */

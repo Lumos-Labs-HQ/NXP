@@ -326,7 +326,7 @@ void nxp_run(void) {
 
 void nxp_poll(void) {
     if (!g_nxp.initialized) return;
-    (void)nxp_event_loop_run_once(g_nxp.loop, 0);
+    (void)nxp_event_loop_run_once(g_nxp.loop, 1);
 }
 
 /* ═════════════════════════════════════════════════════════
