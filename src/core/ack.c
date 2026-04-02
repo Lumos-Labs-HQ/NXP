@@ -50,6 +50,15 @@ void nxp_ack_cleanup(nxp_ack_state *ack) {
 
 void nxp_ack_on_pkt_recv(nxp_ack_state *ack, uint64_t pkt_num,
                           uint64_t now_us, bool ack_eliciting) {
+    /* Check for duplicate/replay - packet already received */
+    for (uint32_t i = 0; i < ack->recv_range_count; i++) {
+        nxp_recv_pn_range *r = &ack->recv_ranges[i];
+        if (pkt_num >= r->start && pkt_num <= r->end) {
+            /* Duplicate packet - ignore (replay attack or network duplication) */
+            return;
+        }
+    }
+
     /* Update largest received */
     if (ack->recv_range_count == 0 || pkt_num > ack->largest_recv_pn) {
         ack->largest_recv_pn   = pkt_num;
@@ -63,7 +72,7 @@ void nxp_ack_on_pkt_recv(nxp_ack_state *ack, uint64_t pkt_num,
     for (uint32_t i = 0; i < ack->recv_range_count; i++) {
         nxp_recv_pn_range *r = &ack->recv_ranges[i];
 
-        /* Already in range */
+        /* Already in range (should not happen due to check above) */
         if (pkt_num >= r->start && pkt_num <= r->end) {
             inserted = true;
             break;

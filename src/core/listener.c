@@ -64,6 +64,9 @@ nxp_listener_s *nxp_listener_create(const nxp_listener_config *config) {
         free(ls);
         return nullptr;
     }
+    
+    /* Create rate limiter */
+    ls->rate_limiter = nxp_rate_limiter_create();
 
     return ls;
 }
@@ -79,6 +82,7 @@ void nxp_listener_destroy(nxp_listener_s *ls) {
     }
     free(ls->conns);
     nxp_hash_map_destroy(ls->conn_map);
+    nxp_rate_limiter_destroy(ls->rate_limiter);
     free(ls);
 }
 
@@ -237,6 +241,12 @@ nxp_result nxp_listener_recv(nxp_listener_s *ls,
                               uint64_t now_us) {
     if (ls == nullptr || data == nullptr || len == 0) {
         return NXP_ERROR(NXP_ERR_INVALID_ARGUMENT);
+    }
+    
+    /* Rate limiting - drop packets from IPs exceeding limit */
+    if (!nxp_rate_limiter_check(ls->rate_limiter, from_addr, now_us)) {
+        ls->total_rejected++;
+        return NXP_ERROR(NXP_ERR_CONGESTION);
     }
 
     /* Peek at first byte to determine header type */

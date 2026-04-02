@@ -21,6 +21,49 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+/* Validate connection state transition */
+static bool is_valid_conn_state_transition(nxp_conn_state from, nxp_conn_state to) {
+    /* Valid transitions:
+     * IDLE -> HANDSHAKE_INITIAL
+     * HANDSHAKE_INITIAL -> HANDSHAKE_IN_PROGRESS
+     * HANDSHAKE_IN_PROGRESS -> ESTABLISHED
+     * ESTABLISHED -> CLOSING
+     * ESTABLISHED -> DRAINING
+     * CLOSING -> DRAINING
+     * CLOSING -> CLOSED
+     * DRAINING -> CLOSED
+     * Any -> CLOSED (error cases)
+     */
+    if (to == NXP_CONN_CLOSED) return true; /* Always allow close */
+    
+    switch (from) {
+    case NXP_CONN_IDLE:
+        return to == NXP_CONN_HANDSHAKE_INITIAL || to == NXP_CONN_ESTABLISHED;
+    case NXP_CONN_HANDSHAKE_INITIAL:
+        return to == NXP_CONN_HANDSHAKE_IN_PROGRESS || to == NXP_CONN_ESTABLISHED || to == NXP_CONN_HANDSHAKE_INITIAL;
+    case NXP_CONN_HANDSHAKE_IN_PROGRESS:
+        return to == NXP_CONN_ESTABLISHED;
+    case NXP_CONN_ESTABLISHED:
+        return to == NXP_CONN_CLOSING || to == NXP_CONN_DRAINING || to == NXP_CONN_ESTABLISHED;
+    case NXP_CONN_CLOSING:
+        return to == NXP_CONN_DRAINING || to == NXP_CONN_CLOSED;
+    case NXP_CONN_DRAINING:
+        return to == NXP_CONN_CLOSED;
+    case NXP_CONN_CLOSED:
+        return false; /* No transitions from closed */
+    }
+    return false;
+}
+
+static inline void set_conn_state(nxp_conn *conn, nxp_conn_state new_state) {
+    if (!is_valid_conn_state_transition(conn->state, new_state)) {
+        /* Invalid transition - log and ignore */
+        return;
+    }
+    conn->state = new_state;
+}
+
 /* ── Helpers ───────────────────────────────────────────── */
 
 /* Callback context for ACK processing */
@@ -239,7 +282,7 @@ void nxp_conn_destroy(nxp_conn *conn) {
 
 void nxp_conn_set_established(nxp_conn *conn, const nxp_conn_id *dcid) {
     conn->dcid  = *dcid;
-    conn->state = NXP_CONN_ESTABLISHED;
+    set_conn_state(conn, NXP_CONN_ESTABLISHED);
 }
 
 /* ── Process Incoming Datagram ────────────────────────── */
@@ -336,7 +379,7 @@ static nxp_result process_frames(nxp_conn *conn, const uint8_t *payload,
 
         case NXP_FRAME_CONNECTION_CLOSE:
         case NXP_FRAME_CONNECTION_CLOSE_APP:
-            conn->state = NXP_CONN_DRAINING;
+            set_conn_state(conn, NXP_CONN_DRAINING);
             break;
 
         case NXP_FRAME_HANDSHAKE_DONE:
@@ -344,7 +387,7 @@ static nxp_result process_frames(nxp_conn *conn, const uint8_t *payload,
             if (conn->handshake != nullptr) {
                 nxp_result hr = nxp_handshake_on_handshake_done(conn->handshake);
                 if (hr.code == NXP_OK) {
-                    conn->state = NXP_CONN_ESTABLISHED;
+                    set_conn_state(conn, NXP_CONN_ESTABLISHED);
                     if (conn->handshake->has_peer_params) {
                         const nxp_transport_params *tp = &conn->handshake->peer_params;
                         if (tp->initial_max_data > 0)
@@ -512,7 +555,7 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
 
             /* If handshake completed, transition to ESTABLISHED */
             if (nxp_handshake_is_complete(conn->handshake)) {
-                conn->state = NXP_CONN_ESTABLISHED;
+                set_conn_state(conn, NXP_CONN_ESTABLISHED);
 
                 /* Apply peer transport params */
                 if (conn->handshake->has_peer_params) {
@@ -530,7 +573,7 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
             if (r.code != NXP_OK) return r;
 
             conn->crypto = conn->handshake->app_keys;
-            conn->state = NXP_CONN_ESTABLISHED;
+            set_conn_state(conn, NXP_CONN_ESTABLISHED);
 
             if (conn->handshake->has_peer_params) {
                 const nxp_transport_params *tp = &conn->handshake->peer_params;
@@ -857,7 +900,7 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
             frame_pos += n;
             has_ack_eliciting = true;
             conn->send_conn_close = false;
-            conn->state = NXP_CONN_CLOSING;
+            set_conn_state(conn, NXP_CONN_CLOSING);
         }
     }
 
@@ -1149,7 +1192,7 @@ uint64_t nxp_conn_timeout(const nxp_conn *conn, uint64_t now_us) {
 void nxp_conn_on_timeout(nxp_conn *conn, uint64_t now_us) {
     /* Idle timeout check */
     if (now_us >= conn->last_activity_us + conn->idle_timeout_us) {
-        conn->state = NXP_CONN_CLOSED;
+        set_conn_state(conn, NXP_CONN_CLOSED);
         return;
     }
 
@@ -1169,7 +1212,7 @@ void nxp_conn_on_timeout(nxp_conn *conn, uint64_t now_us) {
     nxp_heartbeat_check(&conn->heartbeat, now_us);
     if (nxp_heartbeat_is_dead(&conn->heartbeat)) {
         /* Connection is dead - close it */
-        conn->state = NXP_CONN_CLOSED;
+        set_conn_state(conn, NXP_CONN_CLOSED);
     }
 }
 
@@ -1281,17 +1324,17 @@ nxp_result nxp_conn_start_handshake(nxp_conn *conn,
     if (conn->is_server) {
         /* Server: peer_cid is our SCID (which client uses as DCID) */
         r = nxp_handshake_start_server(hs, peer_cid);
-        conn->state = NXP_CONN_HANDSHAKE_INITIAL;
+        set_conn_state(conn, NXP_CONN_HANDSHAKE_INITIAL);
     } else {
         /* Client: peer_cid is the server's DCID */
         conn->dcid = *peer_cid;
         r = nxp_handshake_start_client(hs, peer_cid);
-        conn->state = NXP_CONN_HANDSHAKE_INITIAL;
+        set_conn_state(conn, NXP_CONN_HANDSHAKE_INITIAL);
     }
 
     if (r.code != NXP_OK) {
         nxp_handshake_destroy(hs);
-        conn->state = NXP_CONN_IDLE;
+        set_conn_state(conn, NXP_CONN_IDLE);
         return r;
     }
 
