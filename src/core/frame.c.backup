@@ -8,16 +8,6 @@
 
 #include <string.h>
 
-/* ── Security Limits ── */
-#define NXP_MAX_TOKEN_LEN           1024
-#define NXP_MAX_CLOSE_REASON_LEN    1024
-#define NXP_MAX_CRYPTO_FRAME_DATA   16384
-#define NXP_MAX_STREAM_FRAME_DATA   1048576
-#define NXP_MAX_DATAGRAM_LEN        65536
-#define NXP_MAX_STREAM_ID           (1ULL << 60)
-#define NXP_MAX_STREAM_OFFSET       (1ULL << 60)
-
-
 /* ── Helper: encode varint, advance pos, check bounds ── */
 
 static inline size_t encode_varint(uint64_t val, uint8_t *buf, size_t buf_len, size_t pos) {
@@ -413,14 +403,12 @@ size_t nxp_frame_decode(
         n = decode_varint(buf, buf_len, pos, &out->stream.stream_id);
         if (n == 0) return 0;
         pos += n;
-        if (out->stream.stream_id > NXP_MAX_STREAM_ID) return 0;
 
         /* Offset */
         if (has_off) {
             n = decode_varint(buf, buf_len, pos, &out->stream.offset);
             if (n == 0) return 0;
             pos += n;
-            if (out->stream.offset > NXP_MAX_STREAM_OFFSET) return 0;
         }
 
         /* Length */
@@ -428,20 +416,16 @@ size_t nxp_frame_decode(
             n = decode_varint(buf, buf_len, pos, &out->stream.length);
             if (n == 0) return 0;
             pos += n;
-            if (out->stream.length > NXP_MAX_STREAM_FRAME_DATA) return 0;
         } else {
             /* Without LEN, data extends to end of packet */
-            if (buf_len < pos) return 0;
-            size_t remaining = buf_len - pos;
-            if (remaining > NXP_MAX_STREAM_FRAME_DATA) return 0;
-            out->stream.length = remaining;
+            out->stream.length = buf_len - pos;
         }
 
         /* Data pointer */
         if (out->stream.length > 0) {
-            if (pos > buf_len || out->stream.length > buf_len - pos) return 0;
+            if (pos + out->stream.length > buf_len) return 0;
             out->stream.data = &buf[pos];
-            pos += (size_t)out->stream.length;
+            pos += out->stream.length;
         }
 
         return pos;
@@ -504,22 +488,20 @@ size_t nxp_frame_decode(
         out->type = NXP_FRAME_CRYPTO;
         n = decode_varint(buf, buf_len, pos, &out->crypto.offset); if (n == 0) return 0; pos += n;
         n = decode_varint(buf, buf_len, pos, &out->crypto.length); if (n == 0) return 0; pos += n;
-        if (out->crypto.length > NXP_MAX_CRYPTO_FRAME_DATA) return 0;
         if (out->crypto.length > 0) {
-            if (pos > buf_len || out->crypto.length > buf_len - pos) return 0;
+            if (pos + out->crypto.length > buf_len) return 0;
             out->crypto.data = &buf[pos];
-            pos += (size_t)out->crypto.length;
+            pos += out->crypto.length;
         }
         return pos;
 
     case NXP_FRAME_NEW_TOKEN:
         out->type = NXP_FRAME_NEW_TOKEN;
         n = decode_varint(buf, buf_len, pos, &out->new_token.token_len); if (n == 0) return 0; pos += n;
-        if (out->new_token.token_len > NXP_MAX_TOKEN_LEN) return 0;
         if (out->new_token.token_len > 0) {
-            if (pos > buf_len || out->new_token.token_len > buf_len - pos) return 0;
+            if (pos + out->new_token.token_len > buf_len) return 0;
             out->new_token.token = &buf[pos];
-            pos += (size_t)out->new_token.token_len;
+            pos += out->new_token.token_len;
         }
         return pos;
 
@@ -622,12 +604,11 @@ size_t nxp_frame_decode(
         }
 
         n = decode_varint(buf, buf_len, pos, &out->connection_close.reason_len); if (n == 0) return 0; pos += n;
-        if (out->connection_close.reason_len > NXP_MAX_CLOSE_REASON_LEN) return 0;
 
         if (out->connection_close.reason_len > 0) {
-            if (pos > buf_len || out->connection_close.reason_len > buf_len - pos) return 0;
+            if (pos + out->connection_close.reason_len > buf_len) return 0;
             out->connection_close.reason = &buf[pos];
-            pos += (size_t)out->connection_close.reason_len;
+            pos += out->connection_close.reason_len;
         }
         return pos;
 
@@ -651,11 +632,10 @@ size_t nxp_frame_decode(
     case NXP_FRAME_DATAGRAM:
         out->type = NXP_FRAME_DATAGRAM;
         n = decode_varint(buf, buf_len, pos, &out->datagram.length); if (n == 0) return 0; pos += n;
-        if (out->datagram.length > NXP_MAX_DATAGRAM_LEN) return 0;
         if (out->datagram.length > 0) {
-            if (pos > buf_len || out->datagram.length > buf_len - pos) return 0;
+            if (pos + out->datagram.length > buf_len) return 0;
             out->datagram.data = &buf[pos];
-            pos += (size_t)out->datagram.length;
+            pos += out->datagram.length;
         }
         return pos;
 
