@@ -9,6 +9,43 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+/* Validate stream state transition */
+static bool is_valid_stream_state_transition(nxp_stream_state from, nxp_stream_state to) {
+    /* Valid transitions:
+     * IDLE -> OPEN
+     * OPEN -> HALF_CLOSED_LOCAL
+     * OPEN -> HALF_CLOSED_REMOTE
+     * OPEN -> CLOSED
+     * HALF_CLOSED_LOCAL -> CLOSED
+     * HALF_CLOSED_REMOTE -> CLOSED
+     * Any -> RESET
+     */
+    if (to == NXP_STREAM_RESET || to == NXP_STREAM_CLOSED) return true;
+    
+    switch (from) {
+    case NXP_STREAM_IDLE:
+        return to == NXP_STREAM_OPEN;
+    case NXP_STREAM_OPEN:
+        return to == NXP_STREAM_HALF_CLOSED_LOCAL || 
+               to == NXP_STREAM_HALF_CLOSED_REMOTE;
+    case NXP_STREAM_HALF_CLOSED_LOCAL:
+    case NXP_STREAM_HALF_CLOSED_REMOTE:
+        return to == NXP_STREAM_CLOSED;
+    case NXP_STREAM_CLOSED:
+    case NXP_STREAM_RESET:
+        return false; /* No transitions from terminal states */
+    }
+    return false;
+}
+
+static inline void set_stream_state(nxp_stream_s *s, nxp_stream_state new_state) {
+    if (!is_valid_stream_state_transition(s->state, new_state)) {
+        return; /* Invalid transition - ignore */
+    }
+    s->state = new_state;
+}
+
 /* ── Helpers ───────────────────────────────────────────── */
 
 static uint64_t u64_min(uint64_t a, uint64_t b) { return a < b ? a : b; }
@@ -280,9 +317,9 @@ nxp_result nxp_stream_on_recv(nxp_stream_s *s, const nxp_frame_stream *f) {
 
         /* Update stream state */
         if (s->state == NXP_STREAM_OPEN) {
-            s->state = NXP_STREAM_HALF_CLOSED_REMOTE;
+            set_stream_state(s, NXP_STREAM_HALF_CLOSED_REMOTE);
         } else if (s->state == NXP_STREAM_HALF_CLOSED_LOCAL) {
-            s->state = NXP_STREAM_CLOSED;
+            set_stream_state(s, NXP_STREAM_CLOSED);
         }
     }
 
@@ -303,9 +340,9 @@ void nxp_stream_on_ack(nxp_stream_s *s, uint64_t offset,
         s->send.fin_acked = true;
         /* Check if stream is fully closed */
         if (s->state == NXP_STREAM_HALF_CLOSED_REMOTE) {
-            s->state = NXP_STREAM_CLOSED;
+            set_stream_state(s, NXP_STREAM_CLOSED);
         } else if (s->state == NXP_STREAM_OPEN) {
-            s->state = NXP_STREAM_HALF_CLOSED_LOCAL;
+            set_stream_state(s, NXP_STREAM_HALF_CLOSED_LOCAL);
         }
     }
 }

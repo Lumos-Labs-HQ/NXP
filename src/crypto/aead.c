@@ -5,6 +5,7 @@
  * Used for packet payload protection.
  */
 #include "crypto_internal.h"
+#include "secure_mem.h"
 
 #include <openssl/evp.h>
 #include <string.h>
@@ -136,13 +137,20 @@ ssize_t nxp_aead_decrypt(
         goto done;
 
     /* Verify tag */
-    if (EVP_DecryptFinal_ex(ctx, plaintext + written, &outl) != 1)
-        goto done; /* Authentication failure */
+    if (EVP_DecryptFinal_ex(ctx, plaintext + written, &outl) != 1) {
+        /* Authentication failure - wipe plaintext */
+        nxp_secure_zero(plaintext, written);
+        goto done;
+    }
     written += (size_t)outl;
 
     result = (ssize_t)written;
 
 done:
+    if (result < 0 && plaintext != nullptr) {
+        /* Wipe plaintext on any error */
+        nxp_secure_zero(plaintext, ct_len);
+    }
     EVP_CIPHER_CTX_free(ctx);
     return result;
 }

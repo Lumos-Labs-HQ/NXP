@@ -17,6 +17,7 @@
 #define NXP_LISTENER_INTERNAL_H
 
 #include "nxp/nxp_types.h"
+#include "rate_limit.h"
 #include "nxp/nxp_error.h"
 #include "connection_internal.h"
 #include "hash_map.h"
@@ -80,6 +81,9 @@ typedef struct nxp_listener_s {
     uint64_t            total_accepted;
     uint64_t            total_rejected;
     uint64_t            total_retried;
+    
+    /* DoS protection */
+    nxp_rate_limiter   *rate_limiter;
 } nxp_listener_s;
 
 /* ── Listener API ──────────────────────────────────────── */

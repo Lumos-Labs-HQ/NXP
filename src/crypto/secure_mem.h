@@ -11,6 +11,7 @@
 #define NXP_SECURE_MEM_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef _WIN32
   #include <windows.h>
@@ -27,5 +28,18 @@
       explicit_bzero(ptr, len);
   }
 #endif
+
+/* Constant-time memory comparison (timing-safe) */
+static inline int nxp_secure_compare(const void *a, const void *b, size_t len) {
+    const uint8_t *aa = (const uint8_t *)a;
+    const uint8_t *bb = (const uint8_t *)b;
+    uint8_t diff = 0;
+    
+    for (size_t i = 0; i < len; i++) {
+        diff |= aa[i] ^ bb[i];
+    }
+    
+    return diff; /* 0 if equal, non-zero if different */
+}
 
 #endif /* NXP_SECURE_MEM_H */
