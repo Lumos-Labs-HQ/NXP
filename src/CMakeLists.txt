@@ -4,6 +4,11 @@
 add_library(nxp_util STATIC)
 add_subdirectory(util)
 
+# Logging (optional, C++ with Quill)
+if(NXP_ENABLE_LOGGING)
+    add_subdirectory(logging)
+endif()
+
 # Memory management (arena, pool, slab)
 add_library(nxp_memory STATIC)
 add_subdirectory(memory)

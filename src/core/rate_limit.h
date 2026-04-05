@@ -7,6 +7,7 @@
 #include "nxp/nxp_types.h"
 #include "hash_map.h"
 #include <stdint.h>
+#include <stdlib.h>
 
 #define NXP_RATE_LIMIT_WINDOW_US  1000000  /* 1 second */
 #define NXP_RATE_LIMIT_MAX_PPS    100      /* 100 packets per second per IP */
