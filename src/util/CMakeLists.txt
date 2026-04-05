@@ -7,6 +7,8 @@ target_sources(nxp_util PRIVATE
     priority_queue.c
     random.c
     crc32c.c
+    flight_recorder.c
+    error_tracker.c
 )
 
 target_include_directories(nxp_util
