@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(nxp
     VERSION 0.1.0
-    LANGUAGES C
+    LANGUAGES C CXX
     DESCRIPTION "NEXUS Protocol - Custom Transport over UDP"
 )
 
@@ -28,6 +28,7 @@ option(NXP_ENABLE_TSAN     "Enable ThreadSanitizer"       OFF)
 option(NXP_ENABLE_FUZZING  "Enable fuzz targets"          OFF)
 option(NXP_ENABLE_IO_URING "Enable io_uring backend"      OFF)
 option(NXP_ENABLE_RIO      "Enable Winsock RIO backend"   OFF)
+option(NXP_ENABLE_LOGGING  "Enable Quill logging"          OFF)
 
 # Include helpers
 include(cmake/NxpCompilerFlags.cmake)
