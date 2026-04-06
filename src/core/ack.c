@@ -7,6 +7,7 @@
  */
 #include "connection_internal.h"
 #include "util/flight_recorder.h"
+#include "logging/nxp_log.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -191,6 +192,12 @@ static void update_rtt(nxp_ack_state *ack, uint64_t latest_rtt,
         /* EWMA: srtt = 7/8 * srtt + 1/8 * adjusted */
         ack->smoothed_rtt = (7 * ack->smoothed_rtt + adjusted) / 8;
     }
+    
+    NXP_LOG_TRACE("RTT updated: latest=%llu smoothed=%llu min=%llu var=%llu",
+                  (unsigned long long)latest_rtt,
+                  (unsigned long long)ack->smoothed_rtt,
+                  (unsigned long long)ack->min_rtt,
+                  (unsigned long long)ack->rtt_var);
 }
 
 /* ── Loss Detection ───────────────────────────────────── */

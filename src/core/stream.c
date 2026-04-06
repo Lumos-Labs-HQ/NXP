@@ -6,6 +6,7 @@
  */
 #include "connection_internal.h"
 #include "util/flight_recorder.h"
+#include "logging/nxp_log.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -89,11 +90,15 @@ nxp_stream_s *nxp_stream_create(uint64_t id, nxp_stream_type type,
     s->sched_prev = nullptr;
     s->scheduled  = false;
 
+    NXP_LOG_DEBUG("Stream created: id=%llu type=%d", 
+                  (unsigned long long)id, type);
+    
     return s;
 }
 
 void nxp_stream_destroy(nxp_stream_s *s) {
     if (s == nullptr) return;
+    NXP_LOG_DEBUG("Stream destroyed: id=%llu", (unsigned long long)s->id);
     free(s->send.data);
     free(s->recv.data);
     free(s);

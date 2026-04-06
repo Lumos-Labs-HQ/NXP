@@ -20,3 +20,18 @@ target_link_libraries(test_error_tracking PRIVATE
 if(NXP_ENABLE_LOGGING)
     target_link_libraries(test_error_tracking PRIVATE nxp_logging)
 endif()
+
+add_executable(test_logging test_logging.c)
+target_link_libraries(test_logging PRIVATE 
+    nxp_api 
+    nxp_core 
+    nxp_crypto 
+    nxp_congestion 
+    nxp_util
+    nxp_platform 
+    nxp_memory
+    OpenSSL::Crypto
+)
+if(NXP_ENABLE_LOGGING)
+    target_link_libraries(test_logging PRIVATE nxp_logging)
+endif()
