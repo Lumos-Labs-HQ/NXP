@@ -6,6 +6,8 @@
  */
 #include "crypto_internal.h"
 #include "secure_mem.h"
+#include "util/flight_recorder.h"
+#include "util/error_tracker.h"
 
 #include <openssl/evp.h>
 #include <string.h>
@@ -80,6 +82,12 @@ ssize_t nxp_aead_encrypt(
 
 done:
     EVP_CIPHER_CTX_free(ctx);
+    if (result > 0) {
+        NXP_FLIGHT_CRYPTO("encrypt", "success");
+    } else {
+        NXP_FLIGHT_CRYPTO("encrypt", "failed");
+        NXP_LOG_ERROR_ONLY(NXP_ERR_CRYPTO_FAIL, "AEAD encrypt failed");
+    }
     return result;
 }
 
@@ -152,5 +160,13 @@ done:
         nxp_secure_zero(plaintext, ct_len);
     }
     EVP_CIPHER_CTX_free(ctx);
+    
+    if (result > 0) {
+        NXP_FLIGHT_CRYPTO("decrypt", "success");
+    } else {
+        NXP_FLIGHT_CRYPTO("decrypt", "failed");
+        NXP_LOG_ERROR_ONLY(NXP_ERR_CRYPTO_FAIL, "AEAD decrypt/auth failed");
+    }
+    
     return result;
 }

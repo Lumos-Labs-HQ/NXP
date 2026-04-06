@@ -15,6 +15,9 @@
 #include "frame_internal.h"
 #include "hash_map.h"
 #include "util/varint.h"
+#include "util/flight_recorder.h"
+#include "util/error_tracker.h"
+#include "logging/nxp_log.h"
 #include "congestion/bbr_internal.h"
 #include "crypto/secure_mem.h"
 
@@ -59,8 +62,10 @@ static bool is_valid_conn_state_transition(nxp_conn_state from, nxp_conn_state t
 static inline void set_conn_state(nxp_conn *conn, nxp_conn_state new_state) {
     if (!is_valid_conn_state_transition(conn->state, new_state)) {
         /* Invalid transition - log and ignore */
+        NXP_FLIGHT_ERROR(NXP_ERR_INVALID_ARGUMENT, "invalid state transition");
         return;
     }
+    NXP_FLIGHT_CONN_STATE(conn->state, new_state);
     conn->state = new_state;
 }
 
@@ -296,6 +301,7 @@ static nxp_result process_frames(nxp_conn *conn, const uint8_t *payload,
         nxp_frame frame;
         size_t consumed = nxp_frame_decode(payload + pos, payload_len - pos, &frame);
         if (consumed == 0) {
+            NXP_LOG_ERROR_ONLY(NXP_ERR_INVALID_FRAME, "frame decode failed");
             return NXP_ERROR(NXP_ERR_INVALID_FRAME);
         }
         pos += consumed;
@@ -501,16 +507,23 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
         level = NXP_CRYPTO_HANDSHAKE;
         keys = &conn->handshake->handshake_keys;
     } else {
+        NXP_LOG_ERROR_ONLY(NXP_ERR_INVALID_PACKET, "unknown packet type");
         return NXP_ERROR(NXP_ERR_INVALID_PACKET);
     }
 
-    if (!keys->available) return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    if (!keys->available) {
+        NXP_LOG_ERROR_ONLY(NXP_ERR_CRYPTO_FAIL, "crypto keys not available");
+        return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    }
 
     /* Remove header protection */
     uint8_t pn_len = nxp_hp_unprotect(keys->algo, keys->recv.hp_key,
                                        keys->recv.key_len,
                                        pkt_buf, len, lhdr.pkt_num_offset);
-    if (pn_len == 0) return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    if (pn_len == 0) {
+        NXP_LOG_ERROR_ONLY(NXP_ERR_CRYPTO_FAIL, "header protection removal failed");
+        return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    }
 
     /* Re-read the packet number from the now-unprotected header */
     uint64_t trunc_pn = 0;
@@ -532,14 +545,20 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
                                        keys->recv.key, keys->recv.key_len,
                                        nonce, pkt_buf, hdr_len,
                                        ct, ct_len, pt_buf);
-    if (pt_len < 0) return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    if (pt_len < 0) {
+        NXP_TRACK_ERROR(NXP_ERR_CRYPTO_FAIL, "AEAD decrypt failed - possible attack");
+        return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+    }
 
     /* Process frames - look for CRYPTO frames */
     size_t pos = 0;
     while (pos < (size_t)pt_len) {
         nxp_frame frame;
         size_t consumed = nxp_frame_decode(pt_buf + pos, (size_t)pt_len - pos, &frame);
-        if (consumed == 0) return NXP_ERROR(NXP_ERR_INVALID_FRAME);
+        if (consumed == 0) {
+            NXP_LOG_ERROR_ONLY(NXP_ERR_INVALID_FRAME, "handshake frame decode failed");
+            return NXP_ERROR(NXP_ERR_INVALID_FRAME);
+        }
         pos += consumed;
 
         if (frame.type == NXP_FRAME_CRYPTO) {
@@ -596,13 +615,17 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
 nxp_result nxp_conn_recv(nxp_conn *conn, const uint8_t *data,
                           size_t len, uint64_t now_us) {
     if (conn == nullptr || data == nullptr || len == 0) {
+        NXP_LOG_ERROR_ONLY(NXP_ERR_INVALID_ARGUMENT, "conn_recv: invalid args");
         return NXP_ERROR(NXP_ERR_INVALID_ARGUMENT);
     }
 
     if (conn->state == NXP_CONN_CLOSED || conn->state == NXP_CONN_DRAINING) {
+        NXP_LOG_ERROR_ONLY(NXP_ERR_CONNECTION_CLOSED, "conn_recv: conn closed");
         return NXP_ERROR(NXP_ERR_CONNECTION_CLOSED);
     }
 
+    NXP_FLIGHT_PACKET_RX(len, "peer");
+    
     conn->last_activity_us = now_us;
     conn->stats.bytes_recv += len;
     conn->stats.packets_recv++;
@@ -1149,6 +1172,8 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
     conn->stats.bytes_sent += total;
     conn->next_pkt_num++;
 
+    NXP_FLIGHT_PACKET_TX(total, "peer");
+    
     return (ssize_t)total;
 }
 

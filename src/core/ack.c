@@ -6,6 +6,7 @@
  * and time/reorder-based loss detection (RACK-style).
  */
 #include "connection_internal.h"
+#include "util/flight_recorder.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -234,6 +235,9 @@ static void detect_lost_packets(nxp_ack_state *ack, uint64_t now_us,
                     ack->bytes_in_flight -= pkt->sent_bytes;
                 }
             }
+            
+            NXP_FLIGHT_LOSS(pkt->pkt_num, reorder_lost ? "reorder" : "timeout");
+            
             if (on_loss != nullptr) {
                 on_loss(ctx, pkt);
             }
@@ -323,6 +327,8 @@ void nxp_ack_on_ack_recv(nxp_ack_state *ack, const nxp_frame_ack *frame,
                 }
             }
 
+            NXP_FLIGHT_ACK(pkt->pkt_num, ack->latest_rtt);
+            
             if (on_ack != nullptr) {
                 on_ack(ctx, pkt);
             }
