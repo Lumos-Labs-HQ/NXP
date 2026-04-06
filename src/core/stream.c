@@ -5,6 +5,7 @@
  * and data reassembly.
  */
 #include "connection_internal.h"
+#include "util/flight_recorder.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -152,6 +153,10 @@ ssize_t nxp_stream_write(nxp_stream_s *s, const uint8_t *data,
         s->send.fin = true;
     }
 
+    if (to_write > 0) {
+        NXP_FLIGHT_STREAM(s->id, "write", to_write);
+    }
+    
     return (ssize_t)to_write;
 }
 
@@ -192,6 +197,10 @@ ssize_t nxp_stream_read(nxp_stream_s *s, uint8_t *buf,
     /* Update flow control - data consumed by app */
     nxp_flow_on_consume(&s->flow, to_read);
 
+    if (to_read > 0) {
+        NXP_FLIGHT_STREAM(s->id, "read", to_read);
+    }
+    
     return (ssize_t)to_read;
 }
 

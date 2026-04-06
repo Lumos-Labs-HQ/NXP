@@ -47,7 +47,7 @@ target_include_directories(nxp_crypto PUBLIC
     ${PROJECT_SOURCE_DIR}/src/crypto
     ${PROJECT_SOURCE_DIR}/src
 )
-target_link_libraries(nxp_crypto PRIVATE OpenSSL::Crypto nxp_util)
+target_link_libraries(nxp_crypto PRIVATE OpenSSL::Crypto nxp_util nxp_platform)
 if(NOT WIN32)
     target_compile_definitions(nxp_crypto PRIVATE _DEFAULT_SOURCE)
 endif()

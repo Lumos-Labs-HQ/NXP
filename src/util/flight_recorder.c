@@ -46,6 +46,9 @@ static const char* event_type_name(nxp_event_type type) {
         case NXP_FLIGHT_EVENT_MEMORY_OP: return "MEMORY";
         case NXP_FLIGHT_EVENT_ERROR: return "ERROR";
         case NXP_FLIGHT_EVENT_NETWORK: return "NETWORK";
+        case NXP_FLIGHT_EVENT_STREAM: return "STREAM";
+        case NXP_FLIGHT_EVENT_ACK: return "ACK";
+        case NXP_FLIGHT_EVENT_LOSS: return "LOSS";
         default: return "UNKNOWN";
     }
 }
@@ -77,4 +80,57 @@ void nxp_flight_dump(size_t count) {
 void nxp_flight_dump_all(void) {
     size_t total = g_recorder.full ? NXP_FLIGHT_BUFFER_SIZE : g_recorder.head;
     nxp_flight_dump(total);
+}
+
+void nxp_flight_dump_filtered(nxp_event_type type, size_t count) {
+    size_t total = g_recorder.full ? NXP_FLIGHT_BUFFER_SIZE : g_recorder.head;
+    if (total == 0) return;
+    
+    NXP_LOG_INFO("=== FLIGHT RECORDER DUMP (type=%s, max=%zu) ===", 
+        event_type_name(type), count);
+    
+    size_t found = 0;
+    size_t start = g_recorder.full ? g_recorder.head : 0;
+    
+    // Scan backwards from most recent
+    for (size_t i = 0; i < total && found < count; i++) {
+        size_t idx = (start + total - 1 - i) % NXP_FLIGHT_BUFFER_SIZE;
+        nxp_flight_record *rec = &g_recorder.records[idx];
+        
+        if (rec->type == type) {
+            NXP_LOG_INFO("[%llu] %s: %s", 
+                (unsigned long long)rec->timestamp_us,
+                event_type_name(rec->type),
+                rec->data);
+            found++;
+        }
+    }
+    
+    NXP_LOG_INFO("=== END FILTERED DUMP (%zu events) ===", found);
+}
+
+void nxp_flight_dump_range(uint64_t start_us, uint64_t end_us) {
+    size_t total = g_recorder.full ? NXP_FLIGHT_BUFFER_SIZE : g_recorder.head;
+    if (total == 0) return;
+    
+    NXP_LOG_INFO("=== FLIGHT RECORDER DUMP (time range: %llu - %llu us) ===", 
+        (unsigned long long)start_us, (unsigned long long)end_us);
+    
+    size_t found = 0;
+    size_t start_idx = g_recorder.full ? g_recorder.head : 0;
+    
+    for (size_t i = 0; i < total; i++) {
+        size_t idx = (start_idx + i) % NXP_FLIGHT_BUFFER_SIZE;
+        nxp_flight_record *rec = &g_recorder.records[idx];
+        
+        if (rec->timestamp_us >= start_us && rec->timestamp_us <= end_us) {
+            NXP_LOG_INFO("[%llu] %s: %s", 
+                (unsigned long long)rec->timestamp_us,
+                event_type_name(rec->type),
+                rec->data);
+            found++;
+        }
+    }
+    
+    NXP_LOG_INFO("=== END RANGE DUMP (%zu events) ===", found);
 }
