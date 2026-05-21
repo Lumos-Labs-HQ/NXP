@@ -9,6 +9,7 @@ target_sources(nxp_util PRIVATE
     crc32c.c
     flight_recorder.c
     error_tracker.c
+    metrics.c
 )
 
 target_include_directories(nxp_util

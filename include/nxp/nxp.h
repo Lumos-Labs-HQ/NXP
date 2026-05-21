@@ -31,4 +31,16 @@ void nxp_shutdown(void);
 void nxp_run(void);    /* Run until nxp_shutdown() */
 void nxp_poll(void);   /* Process pending events, return immediately */
 
+/* ── Metrics ──────────────────────────────────────────────── */
+
+/* Render all metrics in Prometheus text format.
+ * Returns bytes written, or -1 if buf too small. */
+int nxp_metrics_render(char *buf, size_t buf_len);
+
+/* Snapshot metrics from a connection into the global aggregator */
+void nxp_metrics_update_conn(const nxp_conn_stats *stats);
+
+/* Reset all metric counters */
+void nxp_metrics_reset(void);
+
 #endif /* NXP_H */
