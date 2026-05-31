@@ -31,4 +31,39 @@ void nxp_shutdown(void);
 void nxp_run(void);    /* Run until nxp_shutdown() */
 void nxp_poll(void);   /* Process pending events, return immediately */
 
+/* ── Transport-agnostic Connection API ────────────────────── */
+
+/*
+ * Connect to a remote NXP endpoint using a URL.
+ *
+ * Supported schemes:
+ *   nxp://host:port     NXP native over UDP (default)
+ *   ws://host:port      WebSocket
+ *   wss://host:port     WebSocket + TLS
+ *   ntc://host:port     Raw TCP with 2-byte length prefix
+ *   nrtc://host:port    WebRTC DataChannel (future)
+ *
+ * Example:
+ *   nxp_connect_url("ws://myapp.com:8080/chat", on_conn, on_close, ctx, &conn);
+ */
+[[nodiscard]] nxp_result nxp_connect_url(
+    const char *url,
+    nxp_conn_cb on_connected,
+    nxp_conn_cb on_closed,
+    void *user_data,
+    nxp_conn **out_conn
+);
+
+/* ── Metrics ──────────────────────────────────────────────── */
+
+/* Render all metrics in Prometheus text format.
+ * Returns bytes written, or -1 if buf too small. */
+int nxp_metrics_render(char *buf, size_t buf_len);
+
+/* Snapshot metrics from a connection into the global aggregator */
+void nxp_metrics_update_conn(const nxp_conn_stats *stats);
+
+/* Reset all metric counters */
+void nxp_metrics_reset(void);
+
 #endif /* NXP_H */

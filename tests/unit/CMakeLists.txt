@@ -144,3 +144,21 @@ if(NOT WIN32)
     target_compile_definitions(test_hardening PRIVATE _DEFAULT_SOURCE)
 endif()
 add_test(NAME test_hardening COMMAND test_hardening)
+
+# ── Transport Tests ─────────────────────────────────────
+
+set(TRANSPORT_TEST_INCLUDES
+    ${TEST_INCLUDES}
+    ${PROJECT_SOURCE_DIR}/src/transport/websocket
+    ${PROJECT_SOURCE_DIR}/src/transport/tcp
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+# Test: WebSocket framing + handshake (RFC 6455)
+add_executable(test_websocket test_websocket.c)
+target_include_directories(test_websocket PRIVATE ${TRANSPORT_TEST_INCLUDES})
+target_link_libraries(test_websocket PRIVATE nxp_transport nxp_util OpenSSL::Crypto)
+if(NOT WIN32)
+    target_compile_definitions(test_websocket PRIVATE _DEFAULT_SOURCE)
+endif()
+add_test(NAME test_websocket COMMAND test_websocket)

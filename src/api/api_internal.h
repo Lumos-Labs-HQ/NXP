@@ -16,7 +16,7 @@
 #include "core/connection_internal.h"
 #include "core/listener_internal.h"
 #include "platform/event_loop.h"
-#include "platform/platform_socket.h"
+#include "platform/transport.h"
 #include "platform/platform_time.h"
 #include "util/random.h"
 
@@ -41,9 +41,9 @@ struct nxp_config {
 
 typedef struct nxp_api_conn {
     nxp_conn              *conn;         /* Internal sans-I/O connection */
-    nxp_socket            *sock;         /* UDP socket (owned or shared) */
+    nxp_transport         *transport;    /* Transport (UDP/WS/TCP/RTC) */
     nxp_timer             *timer;        /* Event loop timer handle */
-    bool                   owns_socket;  /* false for server-accepted conns */
+    bool                   owns_transport;/* false for server-accepted conns */
 
     /* Public callbacks */
     nxp_conn_cb            on_connected;
@@ -70,7 +70,8 @@ typedef struct nxp_api_conn {
 
 struct nxp_listener {
     nxp_listener_s        *ls;           /* Internal sans-I/O listener */
-    nxp_socket            *sock;         /* Bound UDP socket */
+    nxp_transport         *transport;    /* Bound transport */
+    nxp_transport_listener*transport_ln; /* Listener handle */
     nxp_timer             *timer;        /* Event loop timer handle */
 
     /* Public callback */

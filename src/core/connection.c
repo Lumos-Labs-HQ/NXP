@@ -63,9 +63,11 @@ static inline void set_conn_state(nxp_conn *conn, nxp_conn_state new_state) {
     if (!is_valid_conn_state_transition(conn->state, new_state)) {
         /* Invalid transition - log and ignore */
         NXP_FLIGHT_ERROR(NXP_ERR_INVALID_ARGUMENT, "invalid state transition");
+        NXP_LOG_WARN("Invalid state transition: %d -> %d", conn->state, new_state);
         return;
     }
     NXP_FLIGHT_CONN_STATE(conn->state, new_state);
+    NXP_LOG_DEBUG("Connection state: %d -> %d", conn->state, new_state);
     conn->state = new_state;
 }
 
@@ -243,6 +245,9 @@ nxp_conn *nxp_conn_create(const nxp_conn_config *config, bool is_server) {
     conn->auto_reconnect = false;
     conn->max_reconnect_attempts = 3;
 
+    NXP_LOG_INFO("Connection created: scid_len=%d is_server=%d", 
+                 conn->scid.len, is_server);
+    
     return conn;
 }
 
@@ -493,6 +498,11 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
 
     /* Server: learn client's CID from Initial packet SCID */
     if (conn->is_server && lhdr.type == NXP_PKT_INITIAL && conn->dcid.len == 0) {
+        conn->dcid = lhdr.scid;
+    }
+
+    /* Client: learn server's CID from handshake response for 1-RTT packets. */
+    if (!conn->is_server && (lhdr.type == NXP_PKT_INITIAL || lhdr.type == NXP_PKT_HANDSHAKE)) {
         conn->dcid = lhdr.scid;
     }
 
@@ -850,6 +860,7 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
 
     /* If handshake is active, generate handshake packets first */
     if (conn->handshake != nullptr && nxp_handshake_has_data(conn->handshake)) {
+        conn->last_activity_us = now_us;
         return send_handshake_packet(conn, out, max_len, now_us);
     }
 

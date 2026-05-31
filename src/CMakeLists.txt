@@ -17,6 +17,9 @@ add_subdirectory(memory)
 add_library(nxp_platform STATIC)
 add_subdirectory(platform)
 
+# Transport abstraction (pluggable UDP/WS/TCP/RTC backends)
+add_subdirectory(transport)
+
 # Link dependencies between internal libs
 target_link_libraries(nxp_memory PRIVATE nxp_util)
 target_link_libraries(nxp_platform PRIVATE nxp_util nxp_memory)
@@ -91,7 +94,7 @@ target_include_directories(nxp_api PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 target_link_libraries(nxp_api PRIVATE
-    nxp_core nxp_platform nxp_crypto nxp_congestion nxp_memory nxp_util
+    nxp_core nxp_platform nxp_crypto nxp_congestion nxp_memory nxp_util nxp_transport
 )
 if(NOT WIN32)
     target_compile_definitions(nxp_api PRIVATE _DEFAULT_SOURCE)
@@ -107,6 +110,7 @@ target_link_libraries(nxp
         nxp_platform
         nxp_memory
         nxp_util
+        nxp_transport
 )
 target_include_directories(nxp
     PUBLIC
