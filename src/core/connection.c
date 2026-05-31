@@ -501,6 +501,11 @@ static nxp_result recv_handshake_packet(nxp_conn *conn, const uint8_t *data,
         conn->dcid = lhdr.scid;
     }
 
+    /* Client: learn server's CID from handshake response for 1-RTT packets. */
+    if (!conn->is_server && (lhdr.type == NXP_PKT_INITIAL || lhdr.type == NXP_PKT_HANDSHAKE)) {
+        conn->dcid = lhdr.scid;
+    }
+
     /* Determine crypto level and keys */
     nxp_crypto_level level;
     nxp_crypto_state *keys;
@@ -855,6 +860,7 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
 
     /* If handshake is active, generate handshake packets first */
     if (conn->handshake != nullptr && nxp_handshake_has_data(conn->handshake)) {
+        conn->last_activity_us = now_us;
         return send_handshake_packet(conn, out, max_len, now_us);
     }
 

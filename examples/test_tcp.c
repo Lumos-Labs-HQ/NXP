@@ -1,6 +1,7 @@
 /* TCP Protocol - Real Network Test
  * Actually sends data over UDP using NXP
  */
+#define _DEFAULT_SOURCE
 #include "../../src/core/connection_internal.h"
 #include "../../src/platform/platform.h"
 #include <stdio.h>
