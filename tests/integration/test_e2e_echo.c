@@ -43,7 +43,7 @@ static void on_new_conn(nxp_listener *ln, nxp_conn *conn, void *ud) {
     ctx->server_conn = conn;
     printf("  [srv] new connection accepted\n");
     nxp_conn_set_stream_accept_cb(conn, on_server_stream_accept, ctx);
-    nxp_conn_set_callbacks(conn, NULL, on_closed, NULL);
+    nxp_conn_set_callbacks(conn, NULL, on_closed, ctx);
 }
 
 static void on_closed(nxp_conn *c, void *ud) {
@@ -157,8 +157,9 @@ static int run(nxp_stream_type type, const char *name, int port) {
 done:
     nxp_stream_close(cs);
     nxp_conn_close(client_conn, 0);
-    for (int i = 0; i < 200; i++) nxp_poll();
-skip:    nxp_listener_close(ln);
+    for (int i = 0; i < 10; i++) nxp_poll();
+skip:
+    nxp_listener_close(ln);
     nxp_config_free(scfg);
     nxp_shutdown();
     return ctx.fails ? 1 : 0;

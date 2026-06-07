@@ -223,6 +223,67 @@ func DialContext(ctx context.Context, rawURL string, opts *DialOptions) (*Connec
 	return c, nil
 }
 
+// DialRawURL connects using any transport URL (nxp://, ntc://, ws://).
+// Unlike Dial, it does not parse or validate the scheme.
+func DialRawURL(ctx context.Context, rawURL string) (*Connection, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	c := &Connection{
+		scheme:         "raw",
+		host:           rawURL,
+		readyCh:        make(chan struct{}),
+		doneCh:         make(chan struct{}),
+		streamAcceptCh: make(chan *NXPStream, 16),
+	}
+	h := cgo.NewHandle(c)
+	c.handle = h
+
+	startEventLoop()
+
+	conn, r := ConnectRawURL(rawURL, unsafe.Pointer(uintptr(h)))
+	if !r.OK() {
+		h.Delete()
+		return nil, &Error{Code: r.Code, Msg: ErrorStr(r.Code)}
+	}
+
+	c.raw = conn
+	conn.SetStreamAcceptCb(unsafe.Pointer(uintptr(h)))
+	return c, nil
+}
+
+// ListenRawURL starts a server using any transport URL (nxp://, ntc://, ws://).
+func ListenRawURL(rawURL string) (*Server, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+
+	srv := &Server{
+		scheme:   "raw",
+		addr:     rawURL,
+		acceptCh: make(chan *Connection, 128),
+	}
+	h := cgo.NewHandle(srv)
+	srv.handle = h
+
+	startEventLoop()
+
+	ln, r := ListenRawURLWithCb(rawURL, unsafe.Pointer(uintptr(h)))
+	if !r.OK() {
+		h.Delete()
+		return nil, &Error{Code: r.Code, Msg: ErrorStr(r.Code)}
+	}
+
+	srv.raw = ln
+	return srv, nil
+}
+
 func applyDialOptions(cfg *Config, opts *DialOptions, scheme string) {
 	if opts == nil {
 		return
@@ -631,8 +692,16 @@ func (s *Server) Close() error {
 
 // ── Library Lifecycle ─────────────────────────────────
 
-// GracefulShutdown stops the event loop and closes all connections/listeners.
+// GracefulShutdown stops the event loop and releases resources.
+// After this call, no NXP functions should be used.
 func GracefulShutdown() {
 	stopEventLoop()
-	Shutdown()
+	// Wait for the poll goroutine to fully exit before touching C state.
+	if eventLoopDoneCh != nil {
+		<-eventLoopDoneCh
+	}
+	// nxp_shutdown is intentionally skipped: connections and listeners should
+	// be closed individually before calling GracefulShutdown. Calling
+	// nxp_shutdown after Close() on all resources causes use-after-free in the
+	// C event loop internals. The OS reclaims all file descriptors on exit.
 }
