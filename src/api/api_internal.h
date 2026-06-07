@@ -58,6 +58,9 @@ typedef struct nxp_api_conn {
     nxp_stream_accept_cb   stream_accept_cb;
     void                  *stream_accept_ud;
 
+    /* Linked list of all nxp_stream wrappers for this connection */
+    struct nxp_stream     *streams;
+
     /* Parent listener (if server-accepted) */
     struct nxp_listener   *parent_listener;
 
@@ -95,6 +98,10 @@ struct nxp_stream {
     nxp_stream_cb          on_writable;
     nxp_stream_cb          on_close;
     void                  *user_data;
+
+    /* Dispatch tracking: avoid re-firing when no new data */
+    uint64_t               last_dispatched_recv_offset;
+    bool                   fin_notified;
 
     /* Per-connection stream list */
     struct nxp_stream     *next;

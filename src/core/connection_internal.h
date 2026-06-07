@@ -257,6 +257,10 @@ struct nxp_conn {
     bool           send_conn_close;
     uint64_t       close_error_code;
 
+    /* Callback for new remote-initiated streams */
+    void (*on_new_stream)(nxp_conn *conn, uint64_t stream_id, void *user_data);
+    void  *on_new_stream_ud;
+
     /* Stats */
     nxp_conn_stats stats;
 };

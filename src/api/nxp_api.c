@@ -24,6 +24,7 @@ static void on_listener_event(nxp_event_loop *loop, nxp_socket *sock,
                                uint32_t events, void *user_data);
 static void on_listener_timer(nxp_event_loop *loop, void *user_data);
 static void dispatch_listener_conn_events(nxp_listener *ln);
+static void dispatch_stream_data(nxp_api_conn *ac);
 static void listener_on_new_conn_cb(nxp_conn *conn, void *user_data);
 
 /* ── API Conn linked-list helpers ────────────────────── */
@@ -157,6 +158,7 @@ static void on_conn_event(nxp_event_loop *loop, nxp_socket *sock,
     }
 
     nxp_api_flush_conn(ac);
+    dispatch_stream_data(ac);
     nxp_api_rearm_timer(ac);
 }
 
@@ -168,6 +170,7 @@ static void on_conn_timer(nxp_event_loop *loop, void *user_data) {
     uint64_t now = nxp_time_now_us();
     nxp_conn_on_timeout(ac->conn, now);
     nxp_api_flush_conn(ac);
+    dispatch_stream_data(ac);
     nxp_api_rearm_timer(ac);
 }
 
@@ -191,6 +194,7 @@ static void dispatch_listener_conn_events(nxp_listener *ln) {
         }
 
         nxp_api_flush_conn(ac);
+        dispatch_stream_data(ac);
         ac->prev_state = cur;
     }
 }
@@ -551,6 +555,43 @@ void nxp_conn_set_callbacks(nxp_conn *conn, nxp_conn_cb on_connected,
     ac->cb_user_data = user_data;
 }
 
+/* Called by the core when a new remote-initiated stream arrives */
+static void on_new_remote_stream(nxp_conn *conn, uint64_t stream_id, void *ud) {
+    nxp_api_conn *ac = (nxp_api_conn *)ud;
+    if (ac == nullptr || ac->stream_accept_cb == nullptr) return;
+
+    nxp_stream *s = (nxp_stream *)calloc(1, sizeof(nxp_stream));
+    if (s == nullptr) return;
+
+    s->id       = stream_id;
+    s->conn     = conn;
+    s->api_conn = ac;
+    /* Prepend to stream list */
+    s->next     = ac->streams;
+    ac->streams = s;
+
+    ac->stream_accept_cb(conn, s, ac->stream_accept_ud);
+}
+
+/* Fire on_data for all streams that have readable data */
+static void dispatch_stream_data(nxp_api_conn *ac) {
+    for (nxp_stream *s = ac->streams; s != nullptr; s = s->next) {
+        if (s->on_data == nullptr) continue;
+        nxp_stream_s *inner = (nxp_stream_s *)nxp_hash_map_get(
+            ac->conn->streams, s->id);
+        if (inner == nullptr) continue;
+
+        bool has_new_data = inner->recv.recv_offset > s->last_dispatched_recv_offset;
+        bool has_new_fin  = inner->recv.fin_received && !s->fin_notified;
+
+        if (has_new_data || has_new_fin) {
+            s->last_dispatched_recv_offset = inner->recv.recv_offset;
+            if (inner->recv.fin_received) s->fin_notified = true;
+            s->on_data(s, s->user_data);
+        }
+    }
+}
+
 void nxp_conn_set_stream_accept_cb(nxp_conn *conn, nxp_stream_accept_cb cb,
                                     void *user_data) {
     if (conn == nullptr) return;
@@ -558,6 +599,9 @@ void nxp_conn_set_stream_accept_cb(nxp_conn *conn, nxp_stream_accept_cb cb,
     if (ac == nullptr) return;
     ac->stream_accept_cb = cb;
     ac->stream_accept_ud = user_data;
+
+    conn->on_new_stream    = on_new_remote_stream;
+    conn->on_new_stream_ud = ac;
 }
 
 void nxp_conn_set_user_data(nxp_conn *conn, void *data) {
@@ -787,6 +831,12 @@ nxp_result nxp_stream_open(nxp_conn *conn, nxp_stream_type type,
     s->on_close     = on_close;
     s->user_data    = user_data;
     (void)priority;
+
+    /* Track stream for data dispatch */
+    if (s->api_conn != nullptr) {
+        s->next = s->api_conn->streams;
+        s->api_conn->streams = s;
+    }
 
     *out_stream = s;
 

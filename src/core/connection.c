@@ -203,11 +203,12 @@ nxp_conn *nxp_conn_create(const nxp_conn_config *config, bool is_server) {
     conn->next_bidi_id = 0;
     conn->next_uni_id  = 0;
 
-    /* Stream limits */
+    /* Stream limits — local limits from config, peer limits default to
+     * a safe value and get overridden from transport params at handshake */
     conn->local_max_streams_bidi = config->max_streams_bidi;
     conn->local_max_streams_uni  = config->max_streams_uni;
-    conn->peer_max_streams_bidi  = config->max_streams_bidi;
-    conn->peer_max_streams_uni   = config->max_streams_uni;
+    conn->peer_max_streams_bidi  = config->max_streams_bidi ? config->max_streams_bidi : NXP_MAX_STREAMS_DEFAULT;
+    conn->peer_max_streams_uni   = config->max_streams_uni  ? config->max_streams_uni  : NXP_MAX_STREAMS_DEFAULT;
 
     /* Connection-level flow control */
     uint64_t local_max = config->initial_max_data;
@@ -356,6 +357,11 @@ static nxp_result process_frames(nxp_conn *conn, const uint8_t *payload,
                 if (s == nullptr) return NXP_ERROR(NXP_ERR_OUT_OF_MEMORY);
                 (void)nxp_hash_map_put(conn->streams, frame.stream.stream_id, s);
                 conn->stats.streams_opened++;
+                /* Notify API layer of new remote stream */
+                if (conn->on_new_stream != nullptr) {
+                    conn->on_new_stream(conn, frame.stream.stream_id,
+                                        conn->on_new_stream_ud);
+                }
             }
 
             nxp_result r = nxp_stream_on_recv(s, &frame.stream);
@@ -693,7 +699,9 @@ nxp_result nxp_conn_recv(nxp_conn *conn, const uint8_t *data,
                                            nonce,
                                            pkt_buf, hdr_len,
                                            ct, ct_len, decrypt_buf);
-        if (pt_len < 0) return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+        if (pt_len < 0) {
+            return NXP_ERROR(NXP_ERR_CRYPTO_FAIL);
+        }
 
         payload = decrypt_buf;
         payload_len = (size_t)pt_len;
@@ -907,7 +915,7 @@ ssize_t nxp_conn_send(nxp_conn *conn, uint8_t *out, size_t max_len,
     memset(&sent_meta, 0, sizeof(sent_meta));
 
     /* 1. ACK frame (if needed) */
-    if (conn->ack.ack_needed || conn->ack.recv_range_count > 0) {
+    if (conn->ack.ack_needed) {
         nxp_frame_ack ack_frame;
         if (nxp_ack_build_frame(&conn->ack, &ack_frame, now_us)) {
             size_t n = nxp_frame_encode_ack(&ack_frame, frame_buf + frame_pos,
@@ -1199,9 +1207,11 @@ uint64_t nxp_conn_timeout(const nxp_conn *conn, uint64_t now_us) {
     uint64_t loss_t = nxp_ack_loss_timeout(&conn->ack);
     if (loss_t < timeout) timeout = loss_t;
 
-    /* Idle timeout */
-    uint64_t idle_deadline = conn->last_activity_us + conn->idle_timeout_us;
-    if (idle_deadline < timeout) timeout = idle_deadline;
+    /* Idle timeout — only applies after the first packet is received */
+    if (conn->last_activity_us > 0) {
+        uint64_t idle_deadline = conn->last_activity_us + conn->idle_timeout_us;
+        if (idle_deadline < timeout) timeout = idle_deadline;
+    }
 
     /* ACK delay timer */
     if (conn->ack.ack_needed && conn->ack.ack_delay_timer < timeout) {
@@ -1226,8 +1236,9 @@ uint64_t nxp_conn_timeout(const nxp_conn *conn, uint64_t now_us) {
 }
 
 void nxp_conn_on_timeout(nxp_conn *conn, uint64_t now_us) {
-    /* Idle timeout check */
-    if (now_us >= conn->last_activity_us + conn->idle_timeout_us) {
+    /* Idle timeout check — only after first packet received */
+    if (conn->last_activity_us > 0 &&
+        now_us >= conn->last_activity_us + conn->idle_timeout_us) {
         set_conn_state(conn, NXP_CONN_CLOSED);
         return;
     }

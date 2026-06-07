@@ -10,8 +10,8 @@
 package nxp
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../include -DNXP_DEBUG=1
-#cgo LDFLAGS: -L${SRCDIR}/../../build/src -lnxp_api -lnxp_core -lnxp_congestion -lnxp_crypto -lnxp_platform -lnxp_memory -lnxp_util -lssl -lcrypto -lpthread -lm
+#cgo CFLAGS: -I${SRCDIR}/../../include
+#cgo LDFLAGS: -L${SRCDIR}/../../build/src -L${SRCDIR}/../../build/src/transport -lnxp_api -lnxp_transport -lnxp_core -lnxp_congestion -lnxp_crypto -lnxp_platform -lnxp_memory -lnxp_util -lssl -lcrypto -lpthread -lm
 
 #include "nxp/nxp.h"
 #include "nxp/nxp_error.h"
@@ -48,6 +48,13 @@ static void nxp_conn_set_stream_accept_go(nxp_conn *conn, void *ud) {
 
 static void nxp_conn_set_callbacks_go(nxp_conn *conn, void *ud) {
     nxp_conn_set_callbacks(conn, goOnConnected, goOnClosed, ud);
+}
+static nxp_result nxp_connect_url_go(const char *url, void *ud, nxp_conn **out) {
+    return nxp_connect_url(url, goOnConnected, goOnClosed, ud, out);
+}
+
+static nxp_result nxp_listen_url_go(const char *url, void *ud, nxp_listener **out) {
+    return nxp_listen_url(url, goOnNewConn, ud, out);
 }
 */
 import "C"
@@ -130,18 +137,24 @@ func (r Result) OK() bool { return r.Code == 0 }
 // Init initializes the NXP library. Must be called before any other function.
 func Init() Result {
 	config := C.nxp_global_config{}
+	nxpMu.Lock()
 	r := C.nxp_init(&config)
+	nxpMu.Unlock()
 	return Result{Code: int(r.code)}
 }
 
 // Shutdown cleans up all NXP resources.
 func Shutdown() {
+	nxpMu.Lock()
 	C.nxp_shutdown()
+	nxpMu.Unlock()
 }
 
 // Poll drives the event loop once (non-blocking).
 func Poll() {
+	nxpMu.Lock()
 	C.nxp_poll()
+	nxpMu.Unlock()
 }
 
 // Run runs the event loop until shutdown (blocking).
@@ -252,7 +265,9 @@ func Connect(cfg *Config, host string, port uint16) (*Conn, Result) {
 	}
 
 	var conn *C.nxp_conn
+	nxpMu.Lock()
 	r := C.nxp_connect(cfgC, cs, C.uint16_t(port), nil, nil, nil, &conn)
+	nxpMu.Unlock()
 	if r.code != C.NXP_OK {
 		return nil, Result{Code: int(r.code)}
 	}
@@ -271,7 +286,9 @@ func ConnectWithCb(cfg *Config, host string, port uint16, ud unsafe.Pointer) (*C
 	}
 
 	var conn *C.nxp_conn
+	nxpMu.Lock()
 	r := C.nxp_connect_go(cfgC, cs, C.uint16_t(port), ud, &conn)
+	nxpMu.Unlock()
 	if r.code != C.NXP_OK {
 		return nil, Result{Code: int(r.code)}
 	}
@@ -281,18 +298,25 @@ func ConnectWithCb(cfg *Config, host string, port uint16, ud unsafe.Pointer) (*C
 // Close closes the connection with error code 0.
 func (c *Conn) Close() {
 	if c.c != nil {
+		nxpMu.Lock()
 		C.nxp_conn_close(c.c, 0)
+		nxpMu.Unlock()
 	}
 }
 
 // State returns the connection state (see Conn* constants).
 func (c *Conn) State() int {
-	return int(C.nxp_conn_get_state(c.c))
+	nxpMu.Lock()
+	s := int(C.nxp_conn_get_state(c.c))
+	nxpMu.Unlock()
+	return s
 }
 
 // Stats returns connection statistics.
 func (c *Conn) Stats() ConnStats {
+	nxpMu.Lock()
 	s := C.nxp_conn_get_stats(c.c)
+	nxpMu.Unlock()
 	return ConnStats{
 		BytesSent:     uint64(s.bytes_sent),
 		BytesRecv:     uint64(s.bytes_recv),
@@ -309,20 +333,68 @@ func (c *Conn) Stats() ConnStats {
 }
 
 // SetStreamAcceptCb registers the Go stream accept callback on this connection.
+// Safe to call from outside callbacks (acquires lock).
 func (c *Conn) SetStreamAcceptCb(ud unsafe.Pointer) {
+	if c.c != nil {
+		nxpMu.Lock()
+		C.nxp_conn_set_stream_accept_go(c.c, ud)
+		nxpMu.Unlock()
+	}
+}
+
+// SetCallbacks registers connected/closed callbacks on this connection.
+// Safe to call from outside callbacks (acquires lock).
+func (c *Conn) SetCallbacks(ud unsafe.Pointer) {
+	if c.c != nil {
+		nxpMu.Lock()
+		C.nxp_conn_set_callbacks_go(c.c, ud)
+		nxpMu.Unlock()
+	}
+}
+
+// setStreamAcceptCbLocked registers the stream accept callback without acquiring the lock.
+// Must only be called from within a C callback (i.e. already under nxpMu).
+func (c *Conn) setStreamAcceptCbLocked(ud unsafe.Pointer) {
 	if c.c != nil {
 		C.nxp_conn_set_stream_accept_go(c.c, ud)
 	}
 }
 
-// SetCallbacks registers connected/closed callbacks on this connection.
-func (c *Conn) SetCallbacks(ud unsafe.Pointer) {
+// setCallbacksLocked registers connected/closed callbacks without acquiring the lock.
+// Must only be called from within a C callback (i.e. already under nxpMu).
+func (c *Conn) setCallbacksLocked(ud unsafe.Pointer) {
 	if c.c != nil {
 		C.nxp_conn_set_callbacks_go(c.c, ud)
 	}
 }
 
-// ConnStats holds connection-level statistics.
+// ConnectRawURL connects using a full transport URL (nxp://, ntc://, ws://).
+func ConnectRawURL(url string, ud unsafe.Pointer) (*Conn, Result) {
+	cs := C.CString(url)
+	defer C.free(unsafe.Pointer(cs))
+	var conn *C.nxp_conn
+	nxpMu.Lock()
+	r := C.nxp_connect_url_go(cs, ud, &conn)
+	nxpMu.Unlock()
+	if r.code != C.NXP_OK {
+		return nil, Result{Code: int(r.code)}
+	}
+	return &Conn{c: conn}, Result{Code: 0}
+}
+
+// ListenRawURLWithCb starts a listener using a full transport URL.
+func ListenRawURLWithCb(url string, ud unsafe.Pointer) (*RawListener, Result) {
+	cs := C.CString(url)
+	defer C.free(unsafe.Pointer(cs))
+	var listener *C.nxp_listener
+	nxpMu.Lock()
+	r := C.nxp_listen_url_go(cs, ud, &listener)
+	nxpMu.Unlock()
+	if r.code != C.NXP_OK {
+		return nil, Result{Code: int(r.code)}
+	}
+	return &RawListener{l: listener}, Result{Code: 0}
+}
 type ConnStats struct {
 	BytesSent     uint64
 	BytesRecv     uint64
@@ -355,7 +427,9 @@ func RawListen(cfg *Config, addr string, port uint16) (*RawListener, Result) {
 	}
 
 	var listener *C.nxp_listener
+	nxpMu.Lock()
 	r := C.nxp_listen(cfgC, cs, C.uint16_t(port), nil, nil, &listener)
+	nxpMu.Unlock()
 	if r.code != C.NXP_OK {
 		return nil, Result{Code: int(r.code)}
 	}
@@ -373,7 +447,9 @@ func ListenWithCb(cfg *Config, addr string, port uint16, ud unsafe.Pointer) (*Ra
 	}
 
 	var listener *C.nxp_listener
+	nxpMu.Lock()
 	r := C.nxp_listen_go(cfgC, cs, C.uint16_t(port), ud, &listener)
+	nxpMu.Unlock()
 	if r.code != C.NXP_OK {
 		return nil, Result{Code: int(r.code)}
 	}
@@ -383,7 +459,9 @@ func ListenWithCb(cfg *Config, addr string, port uint16, ud unsafe.Pointer) (*Ra
 // Close stops the listener and frees resources.
 func (l *RawListener) Close() {
 	if l.l != nil {
+		nxpMu.Lock()
 		C.nxp_listener_close(l.l)
+		nxpMu.Unlock()
 		l.l = nil
 	}
 }
@@ -402,6 +480,7 @@ func OpenStream(conn *Conn, stype int, priority uint8) (*RawStream, Result) {
 	}
 
 	var stream *C.nxp_stream
+	nxpMu.Lock()
 	r := C.nxp_stream_open(
 		conn.c,
 		C.nxp_stream_type(stype),
@@ -409,6 +488,7 @@ func OpenStream(conn *Conn, stype int, priority uint8) (*RawStream, Result) {
 		nil, nil, nil, nil,
 		&stream,
 	)
+	nxpMu.Unlock()
 	if r.code != C.NXP_OK {
 		return nil, Result{Code: int(r.code)}
 	}
@@ -420,12 +500,14 @@ func (s *RawStream) Send(data []byte, fin bool) int {
 	if s.s == nil || len(data) == 0 {
 		return 0
 	}
+	nxpMu.Lock()
 	n := C.nxp_stream_send(
 		s.s,
 		(*C.uint8_t)(unsafe.Pointer(&data[0])),
 		C.size_t(len(data)),
 		C.bool(fin),
 	)
+	nxpMu.Unlock()
 	return int(n)
 }
 
@@ -435,12 +517,14 @@ func (s *RawStream) Recv(buf []byte) (int, bool) {
 		return 0, false
 	}
 	var fin C.bool
+	nxpMu.Lock()
 	n := C.nxp_stream_recv(
 		s.s,
 		(*C.uint8_t)(unsafe.Pointer(&buf[0])),
 		C.size_t(len(buf)),
 		&fin,
 	)
+	nxpMu.Unlock()
 	if n < 0 {
 		return 0, bool(fin)
 	}
@@ -450,7 +534,9 @@ func (s *RawStream) Recv(buf []byte) (int, bool) {
 // Close closes the stream, sending FIN and freeing resources.
 func (s *RawStream) Close() {
 	if s.s != nil {
+		nxpMu.Lock()
 		C.nxp_stream_close(s.s)
+		nxpMu.Unlock()
 		s.s = nil
 	}
 }
@@ -458,7 +544,9 @@ func (s *RawStream) Close() {
 // Shutdown selectively shuts down the stream (ShutdownRead/ShutdownWrite/ShutdownBoth).
 func (s *RawStream) Shutdown(dir int) {
 	if s.s != nil {
+		nxpMu.Lock()
 		C.nxp_stream_shutdown(s.s, C.nxp_shutdown_dir(dir))
+		nxpMu.Unlock()
 	}
 }
 
@@ -467,7 +555,10 @@ func (s *RawStream) ID() uint64 {
 	if s.s == nil {
 		return ^uint64(0)
 	}
-	return uint64(C.nxp_stream_get_id(s.s))
+	nxpMu.Lock()
+	id := uint64(C.nxp_stream_get_id(s.s))
+	nxpMu.Unlock()
+	return id
 }
 
 // Writable returns bytes of write buffer space available.
@@ -475,7 +566,10 @@ func (s *RawStream) Writable() int {
 	if s.s == nil {
 		return 0
 	}
-	return int(C.nxp_stream_writable(s.s))
+	nxpMu.Lock()
+	n := int(C.nxp_stream_writable(s.s))
+	nxpMu.Unlock()
+	return n
 }
 
 // Readable returns bytes available to read.
@@ -483,7 +577,10 @@ func (s *RawStream) Readable() int {
 	if s.s == nil {
 		return 0
 	}
-	return int(C.nxp_stream_readable(s.s))
+	nxpMu.Lock()
+	n := int(C.nxp_stream_readable(s.s))
+	nxpMu.Unlock()
+	return n
 }
 
 // StreamState returns the stream state (see Stream* constants).
@@ -491,5 +588,8 @@ func (s *RawStream) StreamState() int {
 	if s.s == nil {
 		return StreamClosed
 	}
-	return int(C.nxp_stream_get_state(s.s))
+	nxpMu.Lock()
+	st := int(C.nxp_stream_get_state(s.s))
+	nxpMu.Unlock()
+	return st
 }

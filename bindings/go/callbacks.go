@@ -20,14 +20,27 @@ import (
 var (
 	eventLoopOnce   sync.Once
 	eventLoopStopCh chan struct{}
+	eventLoopDoneCh chan struct{} // closed when the poll goroutine exits
+
+	// nxpMu serializes all C API calls — the NXP library is single-threaded.
+	// Callbacks fire from within nxp_poll (which holds this lock), so callback
+	// code must NOT re-acquire it.
+	nxpMu sync.Mutex
 )
+
+// LockNXP acquires the NXP global lock for use by external callers.
+// Do NOT call from within a callback (already locked by nxp_poll).
+func LockNXP()   { nxpMu.Lock() }
+func UnlockNXP() { nxpMu.Unlock() }
 
 // startEventLoop launches a background goroutine that drives the C event loop.
 // It is auto-started on first Dial() or ListenNXP() call.
 func startEventLoop() {
 	eventLoopOnce.Do(func() {
 		eventLoopStopCh = make(chan struct{})
+		eventLoopDoneCh = make(chan struct{})
 		go func() {
+			defer close(eventLoopDoneCh)
 			ticker := time.NewTicker(1 * time.Millisecond)
 			defer ticker.Stop()
 			for {
@@ -35,7 +48,9 @@ func startEventLoop() {
 				case <-eventLoopStopCh:
 					return
 				case <-ticker.C:
+					nxpMu.Lock()
 					C.nxp_poll()
+					nxpMu.Unlock()
 				}
 			}
 		}()
@@ -87,17 +102,26 @@ func goOnNewConn(ln *C.nxp_listener, conn *C.nxp_conn, ud unsafe.Pointer) {
 	connHandle := cgo.NewHandle(wrapped)
 	wrapped.handle = connHandle
 
-	// Register connected/closed callbacks on this server-accepted connection
-	wrapped.raw.SetCallbacks(unsafe.Pointer(uintptr(connHandle)))
+	// If the connection is already ESTABLISHED (handshake completed before
+	// goOnNewConn fired), close readyCh now — on_connected won't fire again.
+	if wrapped.raw.c != nil {
+		st := C.nxp_conn_get_state(wrapped.raw.c)
+		if int(st) == ConnEstablished {
+			wrapped.established = true
+			close(wrapped.readyCh)
+		}
+	}
 
-	// Register stream accept callback on this connection
-	wrapped.raw.SetStreamAcceptCb(unsafe.Pointer(uintptr(connHandle)))
+	// Register connected/closed callbacks on this server-accepted connection.
+	// We are already inside nxp_poll (nxpMu held), so use the locked variants.
+	wrapped.raw.setCallbacksLocked(unsafe.Pointer(uintptr(connHandle)))
+	wrapped.raw.setStreamAcceptCbLocked(unsafe.Pointer(uintptr(connHandle)))
 
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	if srv.closed {
 		connHandle.Delete()
-		C.nxp_conn_close(conn, 0)
+		C.nxp_conn_close(conn, 0) // called from within nxp_poll — already locked
 		return
 	}
 
@@ -106,7 +130,7 @@ func goOnNewConn(ln *C.nxp_listener, conn *C.nxp_conn, ud unsafe.Pointer) {
 	default:
 		// Accept backlog full — reject connection
 		connHandle.Delete()
-		C.nxp_conn_close(conn, 0)
+		C.nxp_conn_close(conn, 0) // called from within nxp_poll — already locked
 	}
 }
 
@@ -151,7 +175,7 @@ func goOnStreamAccept(conn *C.nxp_conn, stream *C.nxp_stream, ud unsafe.Pointer)
 	h := cgo.Handle(uintptr(ud))
 	c, ok := h.Value().(*Connection)
 	if !ok || c == nil {
-		C.nxp_stream_close(stream)
+		C.nxp_stream_close(stream) // within nxp_poll — already locked
 		return
 	}
 
@@ -163,13 +187,13 @@ func goOnStreamAccept(conn *C.nxp_conn, stream *C.nxp_stream, ud unsafe.Pointer)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		C.nxp_stream_close(stream)
+		C.nxp_stream_close(stream) // within nxp_poll — already locked
 		return
 	}
 
 	select {
 	case c.streamAcceptCh <- wrapped:
 	default:
-		C.nxp_stream_close(stream)
+		C.nxp_stream_close(stream) // within nxp_poll — already locked
 	}
 }
